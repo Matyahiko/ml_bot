@@ -23,7 +23,7 @@ services:
       - ../:/app/ml_bot
     working_dir: /app/ml_bot
     shm_size: '256m'
-    runtime: nvidia
+    #runtime: nvidia
     tty: true
     restart: "always"
     deploy:
@@ -32,6 +32,8 @@ services:
           memory: 200g
         reservations:
           devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+            - capabilities: [gpu]
+
+    #core dumpを防ぐ為の設定
+    #shm_size: 12GB
+
