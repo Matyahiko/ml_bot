@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  python:
+    #network_mode: "host"
+    ports: 
+    #Container:80 local:8100
+      - "8100:80"
+    build:
+      dockerfile: Dockerfile
+      args:
+        - HTTP_PROXY=${HTTP_PROXY}
+        - HTTPS_PROXY=${HTTPS_PROXY}
+    container_name: ml_bot_python
+    environment:
+      - http_proxy=$HTTP_PROXY
+      - https_proxy=$HTTPS_PROXY
+      - TZ=Asia/Tokyo
+    env_file:
+      - .env
+    volumes:
+    #Container:/root/src local:../
+      - ../:/app/ml_bot
+    working_dir: /app/ml_bot
+    shm_size: '256m'
+    runtime: nvidia
+    tty: true
+    restart: "always"
+    deploy:
+      resources:
+        limits:
+          memory: 200g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
