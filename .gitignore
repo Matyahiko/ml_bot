@@ -3,7 +3,7 @@
 poetry.lock
 
 #学習済みモデルの重み
-models/
+models/*
 
 #データセット
 storage/
