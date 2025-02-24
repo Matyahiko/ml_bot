@@ -9,10 +9,13 @@ models/
 storage/
 raw_data/
 **/*.csv
+**/*.tsv
+
 
 #cache
 **/__pycache__/
 joblib_cache/
+ml/catboost_info/
 
 #画像
 **/*.png
