@@ -4,14 +4,12 @@ import pandas as pd
 from joblib import Memory, Parallel, delayed
 
 # 必要なモジュールをインポート
-from modules.prerpocess.technical_indicators import technical_indicators
-from modules.prerpocess.triple_barrier_labels import triple_barrier_labels
-from modules.prerpocess.trend_scan_labels import trend_scan_labels
-from modules.prerpocess.detect_bos import detect_bos
-from modules.prerpocess.detect_choch import detect_choch
-from modules.prerpocess.fvg import detect_fvg, fvg_regression
-from modules.prerpocess.wvf import wvf
-from modules.prerpocess.wvf_triple import wvf_triple
+from modules.preprocess.technical_indicators import technical_indicators
+from modules.preprocess.triple_barrier_labels import triple_barrier_labels
+from modules.preprocess.detect_bos import detect_bos
+from modules.preprocess.detect_choch import detect_choch
+from modules.preprocess.backtest_labeling import backtest_labeling_run
+
 from modules.cross_validation.MovingWindowKFold import MovingWindowKFold
 
 # キャッシュ設定（不要な場合は削除可能）
@@ -24,7 +22,7 @@ class DataPipeline:
       2. 前処理（特徴量作成、ラベル作成、欠損値処理など）
       3. 時系列データの分割とフォールドごとの処理・保存
     """
-    def __init__(self, symbols, base_path='raw_data', filename='bybit_BTCUSDT_15m_data', num_folds=5, n_jobs=-1):
+    def __init__(self, symbols, base_path='raw_data', filename='bybit_BTCUSDT_15m', num_folds=5, n_jobs=-1):
         self.symbols = symbols
         self.base_path = base_path
         self.filename = filename
@@ -40,7 +38,7 @@ class DataPipeline:
         """
         main_df = None
         for sym in self.symbols:
-            file_path = os.path.join(self.base_path, f'bybit_{sym}_15m_data.csv')
+            file_path = os.path.join(self.base_path, f'bybit_{sym}_15m.csv')
             df = pd.read_csv(file_path)
             # CSVの'timestamp'列をUTCとして読み込み、その後timezone情報を除去してtimezone-naiveに変換
             df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert(None)
@@ -77,7 +75,10 @@ class DataPipeline:
             df = technical_indicators(df, sym)
 
         # 最初のシンボルを用いてラベル作成（必要に応じて他のラベル作成関数も利用可能）
-        df = trend_scan_labels(df, self.symbols[0])
+        #df = trend_scan_labels(df, self.symbols[0])
+        
+        df = backtest_labeling_run(df)
+        
 
         # 必要に応じた処理例：undersampling など（コメントアウト）
         # df = undersample_majority_class(df, 'target')
@@ -91,7 +92,7 @@ class DataPipeline:
         """
         加工済みデータを pickle と CSV で保存
         """
-        output_path = f"storage/kline/{self.filename}_fold{fold}_{subset_name}.pkl"
+        output_path = f"ml/storage/kline/{self.filename}_fold{fold}_{subset_name}.pkl"
         data.to_pickle(output_path)
         csv_path = output_path.replace('.pkl', '.csv')
         data.to_csv(csv_path)
@@ -143,8 +144,8 @@ if __name__ == '__main__':
     symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT']
     pipeline = DataPipeline(
         symbols=symbols,
-        base_path='raw_data',
-        filename='bybit_BTCUSDT_15m_data',
+        base_path='ml/raw_data',
+        filename='bybit_BTCUSDT_15m',
         num_folds=5,
         n_jobs=-1
     )
