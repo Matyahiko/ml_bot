@@ -1,21 +1,26 @@
 import os
 import sys
+import time
+from rich import print
 import pandas as pd
 from joblib import Memory, Parallel, delayed
 
-# 必要なモジュールをインポート
+# 特徴量追加用の関数
 from modules.preprocess.technical_indicators import technical_indicators
-from modules.preprocess.triple_barrier_labels import triple_barrier_labels
-from modules.preprocess.detect_bos import detect_bos
-from modules.preprocess.detect_choch import detect_choch
 from modules.preprocess.add_lag_features import add_lag_features
+from modules.preprocess.add_time_features import add_time_features 
+from modules.preprocess.add_rolling_statistics import add_rolling_statistics
+
+#教師ラベル追加用の関数
 from modules.preprocess.backtest_labeling import backtest_labeling_run
 
+# 時系列クロスバリデーション用のクラス
 from modules.cross_validation.MovingWindowKFold import MovingWindowKFold
+
+os.chdir("/app/ml_bot/ml")
 
 # キャッシュ設定（不要な場合は削除可能）
 memory = Memory(location='./joblib_cache/', verbose=0)
-os.chdir("/app/ml_bot/ml")
 
 class DataPipeline:
     def __init__(self, symbols, base_path='raw_data', filename='bybit_BTCUSDT_15m', num_folds=5, n_jobs=-1):
@@ -59,12 +64,17 @@ class DataPipeline:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df.set_index('timestamp', inplace=True)
         df.sort_index(inplace=True)
+        
+        # ここで時間ベースの特徴量を追加
+        df = add_time_features(df)
 
         # 各シンボルに対して特徴量を追加
         for sym in self.symbols:
             df = technical_indicators(df, sym)
-            # ここでラグ特徴量を追加（例として1,2,3期間のラグを追加）
+            # ここでラグ特徴量を追加
             df = add_lag_features(df, sym, lags=[1, 2, 3])
+            #ローリング統計量を追加
+            df = add_rolling_statistics(df, sym, windows=[5, 10, 20])
         
         df = backtest_labeling_run(df)
         
@@ -83,8 +93,9 @@ class DataPipeline:
         """
         output_path = f"storage/kline/{self.filename}_fold{fold}_{subset_name}.pkl"
         data.to_pickle(output_path)
-        csv_path = output_path.replace('.pkl', '.csv')
-        data.to_csv(csv_path)
+        #遅いのでコメントアウト
+        #csv_path = output_path.replace('.pkl', '.csv')
+        #data.to_csv(csv_path)
 
     def process_fold(self, fold: int, train_idx, test_idx):
         train_df = self.dataset.iloc[train_idx]
@@ -127,4 +138,12 @@ if __name__ == '__main__':
         num_folds=5,
         n_jobs=-1
     )
+    start_time = time.time()
     pipeline.run()
+    elapsed_time = time.time() - start_time
+    
+    hours = int(elapsed_time // 3600)
+    minutes = int((elapsed_time % 3600) // 60)
+    seconds = elapsed_time % 60
+
+    print(f"\nTotal execution time: {hours}時間 {minutes}分 {seconds:.2f}秒")
