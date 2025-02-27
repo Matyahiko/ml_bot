@@ -29,6 +29,8 @@ lightgbm = "^4.5.0"
 optuna-integration = "^4.0.0"
 statsmodels = "^0.14.4"
 seaborn = "^0.13.2"
+numerapi = "^2.20.0"
+catboost = "^1.2.7"
 
 [build-system]
 requires = ["poetry-core"]
