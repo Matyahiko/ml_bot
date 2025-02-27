@@ -1,4 +1,6 @@
 import time
+from rich import print
+import os
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
@@ -8,15 +10,18 @@ from modules.rnn_base.rnn_base_classification import run_folds as run_folds_clas
 from modules.rnn_base.rnn_base_multitask import run_folds as run_folds_multitask
 from modules.catboost.run import run as run_folds_multitask_catboost
 
+os.chdir("/app/ml_bot/ml")
+
 # モデルごとに全設定をまとめる
 MODEL_CONFIGS = {
     "multi_target_model": {
         "num_folds": 3,
-        "filename": "bybit_BTCUSDT_15m",
+        "filename": "bybit_BTCUSDT_15m_fold4",
         "data_dir": Path("storage/kline"),
         "target_columns": ["log_return", "volatility", "max_drawdown"],
         "run": run_folds_multitask_catboost,
         "do_hyperpram_search": False,
+        "two_stage": True,
     },
     # 他のモデル設定も同様に追加可能
 }
