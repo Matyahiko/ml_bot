@@ -1,5 +1,6 @@
 import backtrader as bt
 import numpy as np
+import pandas as pd
 
 ##################################
 # 独自LinearRegressionインジケーター
@@ -77,82 +78,81 @@ class LazyBearSqueezeMomentum(bt.Indicator):
 ##################################
 class LazyBearSqueezeMomentumStrategy(bt.Strategy):
     params = (
-        ('hold_period', 5),
-        ('stop_loss', 0.02),
-        ('take_profit', 0.05),
+        ('hold_period', 5),   # 保有期間（バー数）
+        ('stop_loss', 0.02),  # ストップロスの割合
+        ('take_profit', 0.05),# テイクプロフィットの割合
     )
-
+    
+    def log(self, txt, dt=None):
+        """ログ出力用のユーティリティ"""
+        dt = dt or self.data.datetime.datetime(0)
+        print(f'{dt.isoformat()} - {txt}')
+    
     def __init__(self):
-        # 初期化: 取引状態のフラグとタイプを設定
-        self.trade_flag = False
-        self.trade_type = None
+        self.smi = LazyBearSqueezeMomentum(self.data)
+        self.order = None  # 発注中の注文を保持
+        self.entry_bar = None  # エントリーが約定したバー番号を記録
 
-        self.bar_count = 0
-        self.open_trades = []  # オープン中のトレードを記録
-        self.raw_trades = []   # 終了したトレードの記録
-        self.smi = LazyBearSqueezeMomentum(self.data)  # 指標の初期化
+    def notify_order(self, order):
+        if order.status in [order.Submitted, order.Accepted]:
+            return  # まだ処理中
+
+        # 注文が完了した場合
+        if order.status in [order.Completed]:
+            if order.isbuy():
+                self.log(f'BUY EXECUTED, Price: {order.executed.price:.2f}')
+            elif order.issell():
+                self.log(f'SELL EXECUTED, Price: {order.executed.price:.2f}')
+            # エントリー注文完了時にバー番号を記録（後の保有期間判定に利用）
+            if not self.position:
+                # クローズ注文の場合は無視
+                pass
+            else:
+                if self.entry_bar is None:
+                    self.entry_bar = len(self)
+            self.order = None
+
+        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
+            self.log('Order Canceled/Margin/Rejected')
+            self.order = None
+
+    def notify_trade(self, trade):
+        if trade.isclosed:
+            self.log(f'OPERATION PROFIT, GROSS {trade.pnl:.2f}, NET {trade.pnlcomm:.2f}')
+            self.entry_bar = None  # トレード終了時にエントリーバーをリセット
 
     def next(self):
-        current_dt = self.data.datetime.datetime(0)
-        o = self.data.open[0]
-        c = self.data.close[0]
+        # すでに注文中の場合は何もしない
+        if self.order:
+            return
 
-        # 既存のオープンポジションのチェックと更新
-        for trade in self.open_trades.copy():
-            if trade.get('just_entered', False):
-                trade['just_entered'] = False
-                continue
-
-            trade['remaining'] -= 1
-            if trade['remaining'] <= 0 or self.should_exit_trade(trade, c):
-                trade['exit_price'] = c
-                trade['exit_dt'] = current_dt
-                trade['exited'] = True
-                self.raw_trades.append(trade)
-                self.open_trades.remove(trade)
-
-        # ポジションがなくなったらフラグをリセット
-        if not self.open_trades:
-            self.trade_flag = False
-            self.trade_type = None
-
-        self.bar_count += 1
-
-        # エントリーシグナル：前バーがスクイーズ中で、今バーでスクイーズ解除されたタイミング
-        # ※複数ポジションを持たないため、すでにポジションがある場合は新規エントリーしない
-        if not self.trade_flag and self.bar_count > 1:
+        # 未ポジション時にエントリーシグナルの判定
+        if not self.position:
+            # エントリーシグナル：前バーがスクイーズ状態、今バーでスクイーズ解除
             if self.smi.squeeze[-1] == 1.0 and self.smi.squeeze[0] == 0.0:
+                entry_price = self.data.open[0]
                 if self.smi.momentum[0] > 0:
-                    self._enter_trade(current_dt, o, 'long')
+                    # ロングエントリー：ストップロス／テイクプロフィットを bracket 注文で設定
+                    sl = entry_price * (1 - self.p.stop_loss)
+                    tp = entry_price * (1 + self.p.take_profit)
+                    self.log(f'Long Entry Signal at Price: {entry_price:.2f}')
+                    self.order = self.buy_bracket(
+                        size=1,
+                        stopprice=sl,
+                        limitprice=tp
+                    )
                 elif self.smi.momentum[0] < 0:
-                    self._enter_trade(current_dt, o, 'short')
-
-    def _enter_trade(self, current_dt, entry_price, direction):
-        if direction == 'long':
-            SL = entry_price * (1 - self.p.stop_loss)
-            TP = entry_price * (1 + self.p.take_profit)
-        else:  # 'short'
-            SL = entry_price * (1 + self.p.stop_loss)
-            TP = entry_price * (1 - self.p.take_profit)
-        trade = {
-            'entry_dt': current_dt,
-            'entry_price': entry_price,
-            'direction': direction,
-            'remaining': self.p.hold_period,
-            'exit_price': None,
-            'SL': SL,
-            'TP': TP,
-            'exited': False,
-            'just_entered': True,
-        }
-        self.open_trades.append(trade)
-        
-        # エントリー時にフラグを更新（既にポジションがあるため新規エントリーは防ぐ）
-        self.trade_flag = True
-        self.trade_type = direction
-
-    def should_exit_trade(self, trade, price):
-        if trade['direction'] == 'long':
-            return price >= trade['TP'] or price <= trade['SL']
-        else:  # 'short'
-            return price <= trade['TP'] or price >= trade['SL']
+                    # ショートエントリー
+                    sl = entry_price * (1 + self.p.stop_loss)
+                    tp = entry_price * (1 - self.p.take_profit)
+                    self.log(f'Short Entry Signal at Price: {entry_price:.2f}')
+                    self.order = self.sell_bracket(
+                        size=1,
+                        stopprice=sl,
+                        limitprice=tp
+                    )
+        else:
+            # ポジション保有中の場合、保有期間が経過していたらクローズ注文を発注
+            if self.entry_bar is not None and (len(self) - self.entry_bar) >= self.p.hold_period:
+                self.log(f'Hold period reached, closing position at {self.data.open[0]:.2f}')
+                self.order = self.close()
