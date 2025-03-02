@@ -3,7 +3,9 @@
 poetry.lock
 
 #学習済みモデルの重み
+ml/models/*
 models/*
+
 #.gitkeepは残す
 !models/.gitkeep
 
