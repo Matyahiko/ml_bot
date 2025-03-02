@@ -23,7 +23,8 @@ class CatBoostClassifierAndMultiRegressor:
             'task_type': 'GPU',
             'devices': '0:1',  # GPU利用
             'early_stopping_rounds': 30,
-            'verbose': 100,
+            'l2_leaf_reg': 3,
+            'verbose': 500,
             'random_seed': 42
         }
         # ユーザー指定の分類器パラメータで上書き
@@ -32,19 +33,20 @@ class CatBoostClassifierAndMultiRegressor:
         
         # デフォルトの回帰器パラメータ
         self.regressor_params = {
-            'iterations': 5000,
+            'iterations': 10000,
             'learning_rate': 0.003,
-            'depth': 7,
+            'depth':7,
             'loss_function': 'MultiRMSE',
             'boosting_type' :'Plain', 
             'task_type': 'GPU',
             'devices': '0:1',  # GPU利用
             'early_stopping_rounds': 100,
-            'verbose': 100,
+            'verbose': 500,
             'random_seed': 42,
             'max_bin': 254,
             'bootstrap_type': 'Bernoulli',
             'subsample': 0.8,
+            'l2_leaf_reg': 3,
         }
         # ユーザー指定の回帰器パラメータで上書き
         user_regressor_params = kwargs.get("regressor_params", {})
@@ -57,42 +59,12 @@ class CatBoostClassifierAndMultiRegressor:
             'overall': {}
         }
     
-    def _prepare_binary_targets(self, x, y, downsample=True):
+    def _prepare_binary_targets(self, x, y):
         # xとyを結合してから判定する
         df = pd.concat([x, y], axis=1)
-        features_df = df[x.columns]
         target_df = pd.DataFrame()
         target_df["target"] = (df[self.target_columns] != 0).any(axis=1).astype(int)
-        
-        if not downsample:
-            return features_df, target_df
-            
-        # ダウンサンプリングの実装
-        positive_samples = features_df[target_df["target"] == 1]
-        negative_samples = features_df[target_df["target"] == 0]
-        positive_targets = target_df[target_df["target"] == 1]
-        negative_targets = target_df[target_df["target"] == 0]
-        
-        # 少数派クラスのサンプル数に合わせる
-        pos_count = len(positive_samples)
-        if pos_count < len(negative_samples):
-            # 多数派（0）をダウンサンプリング
-            neg_downsampled_idx = np.random.choice(
-                negative_samples.index, pos_count, replace=False
-            )
-            negative_samples = negative_samples.loc[neg_downsampled_idx]
-            negative_targets = negative_targets.loc[neg_downsampled_idx]
-        
-        # バランスの取れたデータセットを作成
-        balanced_features = pd.concat([positive_samples, negative_samples])
-        balanced_targets = pd.concat([positive_targets, negative_targets])
-        
-        # ランダムにシャッフル
-        shuffle_idx = np.random.permutation(len(balanced_features))
-        balanced_features = balanced_features.iloc[shuffle_idx].reset_index(drop=True)
-        balanced_targets = balanced_targets.iloc[shuffle_idx].reset_index(drop=True)
-        
-        return balanced_features, balanced_targets
+        return target_df
 
     def _prepare_regressor_targets(self, x, y):
         # xとyを結合
@@ -105,26 +77,26 @@ class CatBoostClassifierAndMultiRegressor:
         return x_filtered, y_filtered
 
     def train(self, x_train, y_train, x_test, y_test):
-        # 二値分類用ターゲットの作成（ダウンサンプリング適用）
-        x_train_balanced, train_binary_targets = self._prepare_binary_targets(x_train, y_train, downsample=True)
-        x_test_balanced, test_binary_targets = self._prepare_binary_targets(x_test, y_test, downsample=True)
-        
-        # 分類器の学習
+        # 二値分類用ターゲットの作成（x_trainとy_trainを両方渡す）
+        self.train_binary_targets = self._prepare_binary_targets(x_train, y_train)
+        self.test_binary_targets = self._prepare_binary_targets(x_test, y_test)
+        # 取引が起こるかの分類器の学習
         clf = CatBoostClassifier(**self.classifier_params)
-        clf.fit(x_train_balanced, train_binary_targets, 
-                eval_set=[(x_test_balanced, test_binary_targets)],  # リストに包む
+        clf.fit(x_train, self.train_binary_targets, 
+                eval_set=(x_test, self.test_binary_targets), 
                 use_best_model=True)
         
-        # 回帰器用にデータを準備
-        x_train_reg, y_train_reg = self._prepare_regressor_targets(x_train, y_train)
+        # 回帰器用に、x_trainとy_trainを結合後、target列が0でない行のみでデータを準備
+        x_reg, y_reg = self._prepare_regressor_targets(x_train, y_train)
+        
+        # テストデータも同様にフィルタリング
         x_test_reg, y_test_reg = self._prepare_regressor_targets(x_test, y_test)
         
-        # 回帰器の学習 - eval_setを正しく設定
+        # 回帰器の学習
         reg = CatBoostRegressor(**self.regressor_params)
-        reg.fit(x_train_reg, y_train_reg, 
-                eval_set=[(x_test_reg, y_test_reg)],  # リストに包む
+        reg.fit(x_reg, y_reg, 
+                eval_set=(x_test_reg, y_test_reg),
                 use_best_model=True)
-        
         self.classifiers = clf
         self.regressors = reg
     
@@ -142,31 +114,33 @@ class CatBoostClassifierAndMultiRegressor:
         metrics['classification']['precision'] = precision_score(true_labels, pred_clf)
         metrics['classification']['recall'] = recall_score(true_labels, pred_clf)
         metrics['classification']['f1'] = f1_score(true_labels, pred_clf)
-
-        # 分類器の学習曲線（学習時の指標推移）を追加
         metrics['classification']['learning_curve'] = self.classifiers.get_evals_result()
 
-        # 分類器の特徴量寄与率を追加（DataFrameの場合、列名付きのdictとして出力）
         if isinstance(x_test, pd.DataFrame):
-            metrics['classification']['feature_importance'] = dict(zip(x_test.columns, self.classifiers.get_feature_importance()))
+            metrics['classification']['feature_importance'] = dict(
+                zip(x_test.columns, self.classifiers.get_feature_importance())
+            )
         else:
             metrics['classification']['feature_importance'] = self.classifiers.get_feature_importance().tolist()
 
         # --- 回帰評価 ---
-        pred_reg = self.regressors.predict(x_test)
-        
+        # 学習時と同じく、ターゲットが非ゼロのサンプルのみでフィルタリング
+        x_test_reg, y_test_reg = self._prepare_regressor_targets(x_test, y_test)
+        pred_reg = self.regressors.predict(x_test_reg)
+
+        # 予測値と実測値を保持（リスト形式）
         self.regression_predictions = pred_reg.tolist()
-        self.regression_ground_truth = y_test.values.tolist()
-        y_true = y_test.values
-        
+        self.regression_ground_truth = y_test_reg.values.tolist()
+        y_true = y_test_reg.values
+
         if y_true.ndim == 1:
             rmse = np.sqrt(np.mean((pred_reg - y_true) ** 2))
             r2 = r2_score(y_true, pred_reg)
             metrics['regression'] = {'rmse': rmse, 'r2': r2}
         elif y_true.ndim == 2:
             metrics['regression'] = {}
-            if hasattr(y_test, 'columns'):
-                for i, col in enumerate(y_test.columns):
+            if hasattr(y_test_reg, 'columns'):
+                for i, col in enumerate(y_test_reg.columns):
                     rmse = np.sqrt(np.mean((pred_reg[:, i] - y_true[:, i]) ** 2))
                     r2 = r2_score(y_true[:, i], pred_reg[:, i])
                     metrics['regression'][col] = {'rmse': rmse, 'r2': r2}
@@ -176,16 +150,16 @@ class CatBoostClassifierAndMultiRegressor:
                     r2 = r2_score(y_true[:, i], pred_reg[:, i])
                     metrics['regression'][f"target_{i}"] = {'rmse': rmse, 'r2': r2}
 
-        # 回帰器の学習曲線を追加
         metrics['regression']['learning_curve'] = self.regressors.get_evals_result()
 
-        # 回帰器の特徴量寄与率を追加
         if isinstance(x_test, pd.DataFrame):
-            metrics['regression']['feature_importance'] = dict(zip(x_test.columns, self.regressors.get_feature_importance()))
+            metrics['regression']['feature_importance'] = dict(
+                zip(x_test.columns, self.regressors.get_feature_importance())
+            )
         else:
             metrics['regression']['feature_importance'] = self.regressors.get_feature_importance().tolist()
 
-        # --- 全体評価（例として分類F1スコアと回帰R2スコアの幾何平均） ---
+        # --- 全体評価（例として分類F1スコアと回帰R²スコアの幾何平均） ---
         clf_score = metrics['classification']['f1']
         if isinstance(metrics['regression'], dict) and 'r2' not in metrics['regression']:
             reg_scores = [v['r2'] for k, v in metrics['regression'].items() if isinstance(v, dict) and 'r2' in v]
@@ -198,6 +172,7 @@ class CatBoostClassifierAndMultiRegressor:
 
         self.metrics = metrics
         return metrics
+
     
     def save_models(self, save_dir="models/catboost"):
         os.makedirs(save_dir, exist_ok=True)
