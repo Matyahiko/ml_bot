@@ -32,8 +32,6 @@ from modules.preprocess.normalization import fit_transform_scaler, transform_sca
 
 os.chdir("/app/ml_bot/ml")
 
-# キャッシュ設定（不要な場合は削除可能）
-memory = Memory(location='./joblib_cache/', verbose=0)
 
 class DataPipeline:
     def __init__(self, symbols, base_path='raw_data', filename='bybit_BTCUSDT_15m', num_folds=5, n_jobs=-1):
@@ -43,15 +41,10 @@ class DataPipeline:
         self.num_folds = num_folds
         self.n_jobs = n_jobs
         self.dataset = None
-
+        
     # === ステップ1: データの読み込みと統合 ===
     def load_and_merge_data(self):
-        
-        # データdirを削除して再作成
-        os.system("rm -rf storage/kline")
-        os.system("mkdir storage/kline")
-        os.system("mkdir storage/kline/temp")
-
+    
         main_df = None
         for sym in self.symbols:
             file_path = os.path.join(self.base_path, f'bybit_{sym}_15m.csv')
@@ -186,6 +179,12 @@ class DataPipeline:
         print("Data processing pipeline complete.")
 
 if __name__ == '__main__':
+    
+        # データdirを削除して再作成
+    os.system("rm -rf storage/kline")
+    os.system("mkdir storage/kline")
+    os.system("mkdir storage/kline/temp")
+    
     # シンボルなどの設定
     symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT']
     pipeline = DataPipeline(

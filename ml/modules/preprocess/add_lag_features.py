@@ -34,4 +34,3 @@ def add_lag_features(df: pd.DataFrame, sym: str, lags: list = [1, 2, 3], columns
     
     # コピーを作成してメモリ内の断片化を解消
     return df.copy()
-

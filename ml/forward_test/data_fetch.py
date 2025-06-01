@@ -1,12 +1,9 @@
-# data_fetch.py
-
 import os
-import time
 import requests
 import pandas as pd
+import time
 from datetime import datetime
 from rich import print
-from tqdm import tqdm
 
 def fetch_bybit_data(symbol='BTCUSDT', interval='15', limit=200, start_time=None, end_time=None):
     """
@@ -30,8 +27,9 @@ def fetch_bybit_data(symbol='BTCUSDT', interval='15', limit=200, start_time=None
         raise ValueError("APIレスポンスに必要なデータが含まれていません。レスポンス内容: {}".format(data))
     
     df = pd.DataFrame(data['result']['list'])
-    # v5 APIのlistは [timestamp, Open, High, Low, Close, Volume, Turnover]
+    # v5 API のリストは [open_time, open, high, low, close, volume, turnover]
     df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'Turnover']
+    # タイムスタンプはUTCとして扱う
     df['timestamp'] = pd.to_datetime(df['timestamp'].astype(int), unit='ms', utc=True)
     df.set_index('timestamp', inplace=True)
     df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
@@ -41,12 +39,14 @@ def fetch_bybit_data(symbol='BTCUSDT', interval='15', limit=200, start_time=None
 
 def fetch_multiple_bybit_data(symbol='ETHUSDT', interval='15', limit=200, loops=3):
     """
-    指定したシンボルの過去データをループで取得してまとめる関数
+    指定したシンボルの過去データをループで取得してまとめる関数  
+    ※BTCUSDTの場合は、取得した市場データにオンチェーンデータ（Blockchain.com API：BTC専用）を統合します。
     """
     interval_int = int(interval)
     interval_delta = pd.to_timedelta(interval_int, unit='m')
     total_delta = interval_delta * limit
-    end_time = pd.Timestamp.utcnow()
+    # tz付きの現在時刻を直接取得
+    end_time = pd.Timestamp.now(tz='UTC')
     all_data = []
 
     for i in range(loops):
@@ -69,18 +69,24 @@ def fetch_multiple_bybit_data(symbol='ETHUSDT', interval='15', limit=200, loops=
         combined_df.sort_index(inplace=True)
         
         print(f"Total data points for {symbol}: {len(combined_df)}")
-        time.sleep(0.5)
+        time.sleep(0.5)  
 
+    # BTCUSDTの場合のみ、オンチェーンデータを統合（※Blockchain.com API は BTC のみ対応）
+    if symbol.upper() == 'BTCUSDT':
+        metrics = ['n-unique-addresses', 'market-price', 'n-transactions', 'estimated-transaction-volume']
+        combined_df = merge_onchain_data(combined_df, symbol='BTC', onchain_metrics=metrics)
+    
     return combined_df
 
-# ==============================
-# 以下、オンチェーンデータ取得系の関数群
-# ==============================
+# --------------------
+# オンチェーンデータ取得用関数群（Blockchain.com Charts API）
+# --------------------
 
 def fetch_blockchain_onchain_data(metric='n-unique-addresses', start_date='2022-01-01', end_date=None):
     """
     Blockchain.com Charts API を用いてオンチェーンデータを取得します。
-    ※ Blockchain.com API は BTC 向けのデータのみ提供しています。
+    ※Blockchain.com API は BTC 向けのデータのみ提供しています。
+    
     metric: 取得する指標（例: 'n-unique-addresses'：ユニークアドレス数）
     """
     start_dt = pd.Timestamp(start_date, tz='UTC')
@@ -110,7 +116,7 @@ def fetch_blockchain_onchain_data(metric='n-unique-addresses', start_date='2022-
 
 def fetch_blockchain_multi_onchain_data(metrics, start_date, end_date):
     """
-    複数の指標データを一括取得し、インデックスで結合する関数
+    複数の指標データを一括取得し、インデックスで結合します。
     """
     dfs = []
     for metric in metrics:
@@ -127,9 +133,9 @@ def fetch_blockchain_multi_onchain_data(metrics, start_date, end_date):
 
 def merge_onchain_data(market_df, symbol, onchain_metrics=['n-unique-addresses', 'market-price', 'n-transactions', 'estimated-transaction-volume']):
     """
-    市場データとオンチェーンデータを統合する関数
+    市場データとオンチェーンデータを統合します。  
+    Blockchain.com API は BTC のみ対応しているため、引数 symbol が 'BTC' でない場合は統合をスキップします。
     """
-    # Blockchain.com API は BTC のみ対応しているため、BTC以外の場合は統合をスキップ
     if symbol != 'BTC':
         print(f"{symbol}: Blockchain.com API は BTC のみ対応のため、オンチェーンデータ統合をスキップします。")
         return market_df
@@ -143,103 +149,27 @@ def merge_onchain_data(market_df, symbol, onchain_metrics=['n-unique-addresses',
         print(f"{symbol}: オンチェーンデータの取得に失敗しました: {e}")
         return market_df
     
-    # 日次データを15分足に合わせるため前方充填
-    onchain_15min = onchain_df.resample('15min').ffill()
-    merged_df = market_df.join(onchain_15min, how='left')
+    # 市場データの足（例：15分足）に合わせるため、オンチェーンデータを前方充填でリサンプリング
+    onchain_resampled = onchain_df.resample('15min').ffill()
+    merged_df = market_df.join(onchain_resampled, how='left')
     merged_df.ffill(inplace=True)
     return merged_df
 
-def accumulate_data(symbol='BTCUSDT', interval='15', limit=200, 
-                    start_date='2022-01-01', file_name='raw_data/bybit_15m_with_onchain.csv', include_onchain=False):
-    """
-    Bybitデータの蓄積＋オンチェーンデータ統合を行う関数
-    呼び出し方は変更していません。
-    """
-    file_exists = os.path.exists(file_name)
-    
-    if not file_exists:
-        start_time = pd.Timestamp(start_date, tz='UTC')
-    else:
-        existing_df = pd.read_csv(file_name, parse_dates=['timestamp'], index_col='timestamp')
-        if existing_df.index.tz is None:
-            existing_df.index = existing_df.index.tz_localize('UTC')
-        else:
-            existing_df.index = existing_df.index.tz_convert('UTC')
-        last_timestamp = existing_df.index.max()
-        start_time = last_timestamp
-    
-    end_time = pd.Timestamp.now(tz='UTC')
-    
-    interval_int = int(interval)
-    interval_delta = pd.to_timedelta(interval_int, unit='m')
-    total_delta = interval_delta * limit
-    
-    total_iterations = ((end_time - start_time) // total_delta) + 1
-    all_data = []
-    current_start = start_time
-
-    with tqdm(total=total_iterations, desc=f"{symbol} データ取得進行状況", unit="バッチ") as pbar:
-        while current_start < end_time:
-            current_end = current_start + total_delta
-            if current_end > end_time:
-                current_end = end_time
-            
-            try:
-                df = fetch_bybit_data(symbol=symbol, interval=interval, limit=limit,
-                                      start_time=current_start, end_time=current_end)
-            except ValueError as e:
-                print(f"{symbol}: データ取得中にエラーが発生しました: {e}")
-                break
-            
-            if df.empty:
-                print(f"{symbol}: これ以上データが取得できません。終了します。")
-                break
-            
-            all_data.append(df)
-            last_fetched_time = df.index.max()
-            current_start = last_fetched_time + interval_delta
-            time.sleep(0.5)
-            pbar.update(1)
-    
-    if not all_data:
-        print(f"{symbol}: 新規データはありませんでした。")
-        return
-    
-    new_data = pd.concat(all_data)
-    new_data.sort_index(inplace=True)
-    new_data.drop_duplicates(inplace=True)
-    
-    if file_exists:
-        combined_df = pd.concat([existing_df, new_data])
-        combined_df.drop_duplicates(inplace=True)
-        combined_df.sort_index(inplace=True)
-    else:
-        combined_df = new_data
-    
-    combined_df.to_csv(file_name, date_format='%Y-%m-%dT%H:%M:%SZ')
-    print(f"{symbol}: {len(new_data)}件の新規データを追加し、合計{len(combined_df)}件のデータを{file_name}に保存しました。")
-    
-    # BTCUSDTの場合のみ、オンチェーンデータ（BTCのみ）を統合
-    if include_onchain and symbol == 'BTCUSDT':
-        metrics = ['n-unique-addresses', 'market-price', 'n-transactions', 'estimated-transaction-volume']
-        # Blockchain.com API では coin シンボルは 'BTC' として扱う
-        merged_df = merge_onchain_data(combined_df, symbol='BTC', onchain_metrics=metrics)
-        merged_file_name = file_name.replace('.csv', '_merged.csv')
-        merged_df.to_csv(merged_file_name, date_format='%Y-%m-%dT%H:%M:%SZ')
-        print(f"{symbol}: On-chainデータを統合したファイルを {merged_file_name} に保存しました。")
-
-# ==================================================
-# 以下、必要に応じた実行用コード例（モジュールとしても利用可能）
-# ==================================================
+# --------------------
+# __main__ (テスト用)
+# --------------------
 if __name__ == "__main__":
-    # klineデータは 'BTCUSDT', 'ETHUSDT', 'XRPUSDT' の3種類を取得します。
-    symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT']
-    output_dir = 'raw_data'
-    os.makedirs(output_dir, exist_ok=True)
-    
-    for symbol in symbols:
-        # BTCUSDT の場合のみオンチェーンデータ統合を行う
-        include_onchain = True if symbol == 'BTCUSDT' else False
-        file_name = os.path.join(output_dir, f'bybit_{symbol}_15m.csv')
-        accumulate_data(symbol=symbol, interval='15', limit=200, 
-                        start_date='2022-01-01', file_name=file_name, include_onchain=include_onchain)
+    # 例: BTCUSDTの場合、マーケットデータにオンチェーンデータも統合されます。
+    sym = 'BTCUSDT'
+    config = {
+        'interval': '15',
+        'limit': 200,
+        'loops': 3
+    }
+    df_sym = fetch_multiple_bybit_data(
+        symbol=sym,
+        interval=config['interval'],
+        limit=config['limit'],
+        loops=config['loops']
+    )
+    print(df_sym)

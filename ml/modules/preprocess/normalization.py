@@ -1,7 +1,7 @@
 # modules/prepocess/normalization.py
 
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 
 def fit_transform_scaler(train_df: pd.DataFrame, 
                          method: str = 'standard', 
@@ -19,6 +19,7 @@ def fit_transform_scaler(train_df: pd.DataFrame,
          - 'standard'   : StandardScaler をそのまま適用（デフォルト）
          - 'winsorize'  : 各数値カラムを winsorizing（下位 winsor_limits[0]、上位 winsor_limits[1]）後に StandardScaler を適用
          - 'robust'     : RobustScaler を適用
+         - 'minmax'     : MinMaxScaler を適用
     winsor_limits : tuple, optional
         winsorizing の閾値（下側, 上側）のパーセンタイル（例: (0.05, 0.05) なら 5% 以下・5% 以上をそれぞれ切り上げ/切り下げ）
         ※ method が 'winsorize' の場合にのみ使用されます。
@@ -30,7 +31,7 @@ def fit_transform_scaler(train_df: pd.DataFrame,
     scaler_obj : object
         後続の transform に用いる scaler オブジェクト。method が 'winsorize' の場合は dict で
         { "scaler": StandardScaler, "method": "winsorize", "winsor_thresholds": {col: (lower, upper), ...} } となります。
-        それ以外は、StandardScaler または RobustScaler のインスタンスを返します。
+        それ以外は、StandardScaler、RobustScaler、または MinMaxScaler のインスタンスを返します。
     """
     # 数値カラムのみを選択（必要に応じて 'timestamp' など除外してください）
     numeric_cols = train_df.select_dtypes(include=["float", "int"]).columns
@@ -65,8 +66,13 @@ def fit_transform_scaler(train_df: pd.DataFrame,
         train_df[numeric_cols] = scaler.fit_transform(train_df[numeric_cols])
         return train_df, scaler
 
+    elif method == 'minmax':
+        scaler = MinMaxScaler()
+        train_df[numeric_cols] = scaler.fit_transform(train_df[numeric_cols])
+        return train_df, scaler
+
     else:
-        raise ValueError(f"Invalid method: {method}. Choose from 'standard', 'winsorize', or 'robust'.")
+        raise ValueError(f"Invalid method: {method}. Choose from 'standard', 'winsorize', 'robust', or 'minmax'.")
 
 
 def transform_scaler(test_df: pd.DataFrame, scaler_obj, winsor_limits: tuple = (0.05, 0.05)):
@@ -88,6 +94,6 @@ def transform_scaler(test_df: pd.DataFrame, scaler_obj, winsor_limits: tuple = (
         return test_df
 
     else:
-        # 'standard' あるいは 'robust' の場合は、直接 transform を適用
+        # 'standard', 'robust', 'minmax' の場合は、直接 transform を適用
         test_df.loc[:, numeric_cols] = scaler_obj.transform(test_df.loc[:, numeric_cols])
         return test_df

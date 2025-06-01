@@ -31,6 +31,8 @@ statsmodels = "^0.14.4"
 seaborn = "^0.13.2"
 numerapi = "^2.20.0"
 catboost = "^1.2.7"
+polars = "^1.29.0"
+vectorbt = {extras = ["full"], version = "^0.27.3"}
 
 [build-system]
 requires = ["poetry-core"]
