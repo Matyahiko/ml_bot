@@ -16,10 +16,10 @@ class CatBoostMultiClassifier:
         self.classifier_params = {
             'iterations': 10000,
             'learning_rate': 0.03,
-            'depth': 7,
-            'loss_function': 'MultiClass',  # 多クラス分類用
-            'eval_metric': 'MultiClass',
-            'boosting_type': 'Plain',
+            'depth': 6,
+            'loss_function': 'Logloss',
+            'eval_metric': 'AUC',
+            'boosting_type' :'Plain',
             'task_type': 'GPU',
             'devices': '0:1',  # GPU利用
             'early_stopping_rounds': 30,

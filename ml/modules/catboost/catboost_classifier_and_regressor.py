@@ -23,9 +23,12 @@ class CatBoostClassifierAndMultiRegressor:
             'task_type': 'GPU',
             'devices': '0:1',  # GPU利用
             'early_stopping_rounds': 30,
-            'l2_leaf_reg': 3,
             'verbose': 500,
-            'random_seed': 42
+            'random_seed': 42,
+            'max_bin': 254,
+            'bootstrap_type': 'Bernoulli',
+            'subsample': 0.8,
+            'l2_leaf_reg': 3,
         }
         # ユーザー指定の分類器パラメータで上書き
         user_classifier_params = kwargs.get("classifier_params", {})

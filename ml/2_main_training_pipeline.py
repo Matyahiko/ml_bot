@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 from modules.rnn_base.rnn_base_regression import run_folds as run_folds_regression
 from modules.rnn_base.rnn_base_classification import run_folds as run_folds_classification
 from modules.rnn_base.rnn_base_multitask import run_folds as run_folds_multitask
-from modules.catboost.run import run as run_folds_multitask_catboost
+from modules.catboost.run import run as run_catboost
 
 os.chdir("/app/ml_bot/ml")
 
@@ -19,12 +19,17 @@ MODEL_CONFIGS = {
         "filename": "bybit_BTCUSDT_15m_fold4",
         "data_dir": Path("storage/kline"),
         "target_columns": ["log_return", "volatility", "max_drawdown"],
-        "run": run_folds_multitask_catboost,
+        #"target_columns": ["log_return"],
+        #"target_columns": ["direction"],
+        "exclude_columns": [],
+        "run": run_catboost,
         "do_hyperpram_search": False,
-        "two_stage": True,
+        "two_stage": False,
+        "is_classification": False,  # 回帰問題の場合はFalse
     },
-    # 他のモデル設定も同様に追加可能
 }
+
+
 
 def train_model(model_name):
     config = MODEL_CONFIGS[model_name]

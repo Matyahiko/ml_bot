@@ -135,7 +135,7 @@ def accumulate_data(symbol='BTCUSDT', interval='15', limit=200,
 
 if __name__ == "__main__":
     # 収集したいシンボルのリストを定義
-    symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'BCHUSDT']  
+    symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT']  
     
     # データ保存ディレクトリを確認・作成
     output_dir = 'raw_data'
@@ -145,5 +145,5 @@ if __name__ == "__main__":
     for symbol in symbols:
         # ファイル名をシンボルごとに変更
         file_name = os.path.join(output_dir, f'bybit_{symbol}_15m_data.csv')
-        accumulate_data(symbol=symbol, interval='15', limit=200, 
+        accumulate_data(symbol=symbol, interval='5', limit=200, 
                        start_date='2022-01-01', file_name=file_name)

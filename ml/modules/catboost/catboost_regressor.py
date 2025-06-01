@@ -16,8 +16,8 @@ class CatBoostMultiRegressor:
         # デフォルトの回帰器パラメータ
         self.regressor_params = {
             'iterations': 10000,
-            'learning_rate': 0.003,
-            'depth': 7,
+            'learning_rate': 0.03,
+            'depth': 6,
             'loss_function': self.loss_function,
             'boosting_type': 'Plain', 
             'task_type': 'GPU',
@@ -47,15 +47,26 @@ class CatBoostMultiRegressor:
         # 結合前の列をそれぞれに戻す
         x_filtered = df_filtered[x.columns]
         y_filtered = df_filtered[y.columns]
+
+        # ターゲットが重複した場合、最初に登場する行を抽出
+        unique_indices = ~y_filtered.duplicated(keep='first')
+        x_filtered = x_filtered.loc[unique_indices]
+        y_filtered = y_filtered.loc[unique_indices]
+
         return x_filtered, y_filtered
-    
+        
+        return x_filtered, y_filtered
     def train(self, x_train, y_train, x_test, y_test):
         # 回帰器用に、x_trainとy_trainを結合後、target列が0でない行のみでデータを準備
         x_reg, y_reg = self._prepare_regressor_targets(x_train, y_train)
         
         # テストデータも同様にフィルタリング
         x_test_reg, y_test_reg = self._prepare_regressor_targets(x_test, y_test)
+        print("y_reg_info: ")
         print(y_reg.info())
+        print("y_test_reg_info: ")
+        print(y_test_reg.info())
+        
         # 回帰器の学習
         reg = CatBoostRegressor(**self.regressor_params)
         

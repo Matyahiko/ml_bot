@@ -1,361 +1,176 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-main.py
-
-【概要】
-・各シンボルのデータを取得し、テクニカル指標計算を実施。
-・CatBoostマルチタスクモデルにより、LongReturn, ShortReturn, LongVolatility,
-  ShortVolatility, LongMaxDD, ShortMaxDD の6指標を予測。
-・BacktraderのデータフィードにCatBoost予測結果とOHLCVをセットし、SMAフィルタ付き
-  ロング・ショート戦略にて、かつ予測の閾値条件（ロングならLongReturn > 0.001、短期ならShortReturn < -0.001）
-  を満たす場合のみエントリーするトレードシミュレーションを実施。
-"""
-
 import os
 import sys
-import time
-import logging
-from rich import print
-import backtrader as bt
 import pandas as pd
-import matplotlib.pyplot as plt
-import math
 import numpy as np
-
-# データ取得用モジュールのインポート
-from data_fetch import fetch_multiple_bybit_data
-
-# プロジェクトルートをパスに追加（必要に応じて調整）
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# テクニカル指標計算用モジュールのインポート
-from modules.prepocess.technical_indicators import technical_indicators
-
-# TimeSeriesDataset（ウィンドウデータ作成用）のインポート
-from modules.rnn_base.rnn_data_process import TimeSeriesDataset
-
-# CatBoostのインポート
+import backtrader as bt
+from datetime import datetime
 from catboost import CatBoostRegressor
 
-# matplotlib のプロット設定
-plt.style.use("default")
-plt.rcParams["figure.figsize"] = (15, 12)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ログ設定（INFOレベルのログを標準出力に出力）
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# データ取得部分を切り出したファイルからインポート
+from data_fetch import fetch_multiple_bybit_data
 
-# ---------------------------
-# シミュレーション用設定パラメータ
-# ---------------------------
+# 特徴量追加用の関数
+from modules.preprocess.technical_indicators import technical_indicators
+from modules.preprocess.add_lag_features import add_lag_features
+from modules.preprocess.add_time_features import add_time_features 
+from modules.preprocess.add_rolling_statistics import add_rolling_statistics
+
+os.chdir("/app/ml_bot/ml")
+
 config = {
-    # CatBoostモデルのパス（マルチタスクモデル用）
-    'catboost_model_path': 'models/catboost/catboost_model_final.cbm',
-    # 取得対象のシンボル（例：BTCUSDT, ETHUSDT, XRPUSDT）
-    'symbols': ['BTCUSDT', 'ETHUSDT', 'XRPUSDT'],
-    # 取得する足の間隔（15分足）
-    'interval': '15',
-    # APIで一度に取得するデータ数の上限
-    'limit': 200,
-    # 取得処理のループ回数
-    'loops': 10,
-    # シミュレーション開始時の初期資金
-    'cash': 1000000,
-    # 取引手数料
-    'commission': 0.0002,
-    # スリッページ
-    'slippage': 0.0001,
-    # CatBoost推論時に利用するウィンドウサイズ
-    'window_size': 405,
-    # CatBoost推論時のストライド
-    'stride': 1,
+    "symbols": ["BTCUSDT", "ETHUSDT", "XRPUSDT"],
+    "interval": 15,
+    "limit": 200,
+    "loops": 50,
+    "catboost_model_path": "models/catboost/catboost_regressor.cbm",
+    # シミュレーション用パラメータ
+    "cash": 100000,
+    "commission": 0.001,
+    "slippage": 0.001,
 }
 
-#####################################
-# CatBoost推論用関数（マルチタスク）
-#####################################
-def catboost_predict(df, model_path, window_size=405, stride=1):
-    """
-    CatBoostのマルチタスクモデルを用いて、入力データから6つの指標（
-    LongReturn, ShortReturn, LongVolatility, ShortVolatility, LongMaxDD, ShortMaxDD）を予測する関数です。
+##################################
+# 独自LinearRegressionインジケーター
+##################################
+class LinearRegression(bt.Indicator):
+    lines = ('linreg',)
+    params = (('period', 20),)
     
-    Args:
-        df (DataFrame): 入力特徴量を含むデータフレーム
-        model_path (str): 学習済みCatBoostモデルのパス
-        window_size (int): 時系列ウィンドウサイズ（デフォルト: 405）
-        stride (int): ウィンドウをずらすステップ幅（デフォルト: 1）
-        
-    Returns:
-        df_pred (DataFrame): ウィンドウインデックスと6つの予測結果を持つデータフレーム。
-            カラムは ['LongReturn', 'ShortReturn', 'LongVolatility', 'ShortVolatility', 'LongMaxDD', 'ShortMaxDD'] となります。
-    """
-    # TimeSeriesDatasetを用いてウィンドウデータを作成
-    dataset = TimeSeriesDataset(predict_df=df, window_size=window_size, stride=stride)
+    def __init__(self):
+        self.addminperiod(self.p.period)
     
-    # 予測用特徴量は predict_features 属性に格納されている
-    if dataset.predict_features is not None:
-        feat_np = dataset.predict_features.numpy()
-        N, W, F = feat_np.shape
-        X_test = feat_np.reshape(N, W * F)
-    else:
-        raise ValueError("予測用特徴量が存在しません。")
-    
-    # CatBoostモデルの読み込み
-    model = CatBoostRegressor()
-    model.load_model(model_path)
-    
-    # 推論実施（出力は (N, 6) の配列を想定）
-    predictions = model.predict(X_test)
-    predictions = np.array(predictions)
-    
-    # 各ウィンドウの最終インデックスを取得
-    ws = dataset.window_size
-    st = dataset.stride
-    window_indices = [df.index[i + ws - 1] for i in range(0, len(df) - ws, st)]
-    
-    if len(window_indices) != len(predictions):
-        print(f"警告: ウィンドウ数 ({len(window_indices)}) と予測数 ({len(predictions)}) が一致しません。")
-    
-    # 予測結果をDataFrameに格納（6指標に対応）
-    col_names = ['LongReturn', 'ShortReturn', 'LongVolatility', 'ShortVolatility', 'LongMaxDD', 'ShortMaxDD']
-    df_pred = pd.DataFrame(predictions, index=window_indices, columns=col_names)
-    
-    return df_pred
+    def next(self):
+        period = self.p.period
+        # 過去 period 個のデータ点を取得
+        x = np.arange(period)
+        y = np.array([self.data[i] for i in range(-period+1, 1)])
+        slope, _ = np.polyfit(x, y, 1)
+        self.lines.linreg[0] = slope
 
-############################################
-# Backtrader 用データフィード定義（修正版）
-############################################
-class BybitCSV(bt.feeds.PandasData):
-    """
-    Backtraderで利用するカスタムPandasDataクラス。
-    CatBoostの予測結果（6指標）も扱えるように拡張。
-    """
-    lines = ('LongReturn', 'ShortReturn', 'LongVolatility', 'ShortVolatility', 'LongMaxDD', 'ShortMaxDD')
-    symbol = config['symbols'][0]
+##################################
+# カスタムデータフィード（必要最小限＋予測値追加）
+##################################
+class CustomPandasData(bt.feeds.PandasData):
+    # max drawdown を除外し、log_return と volatility のみ利用
+    lines = ('pred_log_return', 'pred_volatility',)
     params = (
         ('datetime', None),
-        ('open', f'{symbol}_Open'),
-        ('high', f'{symbol}_High'),
-        ('low', f'{symbol}_Low'),
-        ('close', f'{symbol}_Close'),
-        ('volume', f'{symbol}_Volume'),
-        ('LongReturn', 'LongReturn'),
-        ('ShortReturn', 'ShortReturn'),
-        ('LongVolatility', 'LongVolatility'),
-        ('ShortVolatility', 'ShortVolatility'),
-        ('LongMaxDD', 'LongMaxDD'),
-        ('ShortMaxDD', 'ShortMaxDD'),
-        ('openinterest', -1),
+        ('open', 'BTCUSDT_Open'),
+        ('high', 'BTCUSDT_High'),
+        ('low', 'BTCUSDT_Low'),
+        ('close', 'BTCUSDT_Close'),
+        ('volume', 'BTCUSDT_Volume'),
+        ('pred_log_return', 'pred_log_return'),
+        ('pred_volatility', 'pred_volatility'),
     )
 
-#####################################################
-# SMAフィルタ付き ロング・ショートエントリー戦略（教師ラベル生成用）
-#####################################################
-class SmaFilteredEntryExitLongShortStrategy(bt.Strategy):
-    """
-    SMAフィルタ付き ロング・ショート戦略:
-      - SMAフィルタ: Close価格がSMAより上ならロング、下ならショートエントリー。
-      - エントリールール: entry_intervalごとにエントリー。
-      - さらに、エントリー時にはCatBoostの推論結果により、
-            ロングの場合はLongReturnが0.001を超える、
-            ショートの場合はShortReturnが -0.001未満であることを確認。
-      - 保有期間: hold_periodバー後にクローズ（ストップロス・テイクプロフィット到達が先ならそちらを優先）
-    
-    トレード終了時に、各トレードの教師ラベルとして以下の6指標を算出:
-      - ロングの場合: LongReturn, LongVolatility, LongMaxDD
-      - ショートの場合: ShortReturn, ShortVolatility, ShortMaxDD
-      ※ 該当しない指標は0.0とする。
-    """
+##################################
+# LazyBearSqueezeMomentum 指標
+##################################
+class LazyBearSqueezeMomentum(bt.Indicator):
+    lines = ('squeeze', 'momentum',)
     params = (
-        ('entry_interval', 1),       # 何バーおきにエントリーするか
-        ('hold_period', 1),          # 保有期間（バー数）
-        ('stop_loss', 0.02),         # ストップロス幅（例:2%）
-        ('take_profit', 0.05),       # テイクプロフィット幅（例:5%）
-        ('sma_period', 20),          # SMAの期間
-        ('long_return_threshold', 0.00001),   # ロングエントリーの閾値
-        ('short_return_threshold', -0.001), # ショートエントリーの閾値
+        ('bb_period', 20),
+        ('bb_devfactor', 2.0),
+        ('kc_multiplier', 1.5),
+    )
+    plotinfo = dict(subplot=True)
+    plotlines = dict(
+        momentum=dict(color='blue'),
+        squeeze=dict(marker='o', markersize=4, color='red'),
     )
 
     def __init__(self):
-        self.bar_count = 0
-        self.open_trades = []   # 各トレードの情報を保持するリスト
-        self.results = []       # 各トレード終了時に生成された教師ラベルのリスト
-
-        # 移動平均インジケータ
-        self.sma = bt.indicators.SimpleMovingAverage(self.data.close, period=self.params.sma_period)
+        # 中軸：SMA（BBとKCの共通基準）
+        self.sma = bt.indicators.SimpleMovingAverage(self.data.close, period=self.p.bb_period)
+        # 標準偏差
+        self.std = bt.indicators.StandardDeviation(self.data.close, period=self.p.bb_period)
+        # ボリンジャーバンド
+        self.bb_upper = self.sma + self.p.bb_devfactor * self.std
+        self.bb_lower = self.sma - self.p.bb_devfactor * self.std
+        # ATR（KC計算用）
+        self.atr = bt.indicators.ATR(self.data, period=self.p.bb_period)
+        # ケルトナーチャネル
+        self.kc_upper = self.sma + self.p.kc_multiplier * self.atr
+        self.kc_lower = self.sma - self.p.kc_multiplier * self.atr
+        # モメンタム： (Close - SMA) の線形回帰の傾きを利用
+        self.linreg = LinearRegression(self.data.close - self.sma, period=self.p.bb_period)
+        self.lines.momentum = self.linreg.lines.linreg
 
     def next(self):
-        # 現在バーの日時とOHLC値の取得
+        # BBがKC内に収まっている＝スクイーズ状態
+        if self.bb_lower[0] > self.kc_lower[0] and self.bb_upper[0] < self.kc_upper[0]:
+            self.lines.squeeze[0] = 1.0
+        else:
+            self.lines.squeeze[0] = 0.0
+
+##################################
+# LazyBearSqueezeMomentumStrategy（ロング・ショート両用、リスク調整後リターン条件追加）
+##################################
+class LazyBearSqueezeMomentumStrategy(bt.Strategy):
+    params = (
+        ('hold_period', 1),
+        ('stop_loss', 0.02),
+        ('take_profit', 0.05),
+        ('risk_adj_threshold', 0.0001),
+    )
+
+    def __init__(self):
+        self.order = None           # 発注中の注文を保持
+        self.entry_bar = None       # エントリー時のバー番号を記録
+        self.bar_count = 0          # 現在のバー番号
+        self.smi = LazyBearSqueezeMomentum(self.data)
+
+    def next(self):
+        self.bar_count += 1
         current_dt = self.data.datetime.datetime(0)
         o = self.data.open[0]
-        h = self.data.high[0]
-        l = self.data.low[0]
         c = self.data.close[0]
 
-        ########################################
-        # 1. オープン中トレードの管理
-        ########################################
-        trades_to_remove = []
-        for trade in self.open_trades:
-            # エントリー直後は1バー目は次バーから管理
-            if trade.get('just_entered', False):
-                trade['just_entered'] = False
-                continue
-            if trade['exited']:
-                continue
+        # すでにポジションを持っている場合、ホールド期間経過で決済（ポジションがあれば bracket 注文が自動でキャンセルされる）
+        if self.position:
+            if self.entry_bar is not None and (self.bar_count - self.entry_bar) >= self.p.hold_period:
+                self.close()  # 決済注文を発注
+            return  # ポジション中は新たな注文は出さない
 
-            exit_price = None
-            direction = trade['direction']
+        # すでに注文が出ている場合は何もしない
+        if self.order:
+            return
 
-            if direction == 'long':
-                if o >= trade['TP']:
-                    exit_price = o
-                elif o <= trade['SL']:
-                    exit_price = o
-                elif h >= trade['TP']:
-                    exit_price = trade['TP']
-                elif l <= trade['SL']:
-                    exit_price = trade['SL']
-            elif direction == 'short':
-                if o <= trade['TP']:
-                    exit_price = o
-                elif o >= trade['SL']:
-                    exit_price = o
-                elif l <= trade['TP']:
-                    exit_price = trade['TP']
-                elif h >= trade['SL']:
-                    exit_price = trade['SL']
+        # エントリーシグナルのチェック（前バーがスクイーズ中で、今バーでスクイーズが解除）
+        if self.smi.squeeze[-1] == 1.0 and self.smi.squeeze[0] == 0.0:
+            # ロングの場合（モメンタムが正）
+            if self.smi.momentum[0] > 0:
+                risk_adj_return = (self.data.pred_log_return[0] / self.data.pred_volatility[0]) if self.data.pred_volatility[0] != 0 else 0
+                if risk_adj_return > self.p.risk_adj_threshold:
+                    SL = o * (1 - self.p.stop_loss)
+                    TP = o * (1 + self.p.take_profit)
+                    # ロングの bracket 注文を発注（エントリー、ストップ、テイクプロフィット注文が同時に発注される）
+                    self.order = self.buy_bracket(price=o, stopprice=SL, limitprice=TP)
+            # ショートの場合（モメンタムが負）
+            elif self.smi.momentum[0] < 0:
+                risk_adj_return = (-self.data.pred_log_return[0] / self.data.pred_volatility[0]) if self.data.pred_volatility[0] != 0 else 0
+                if risk_adj_return > self.p.risk_adj_threshold:
+                    SL = o * (1 + self.p.stop_loss)
+                    TP = o * (1 - self.p.take_profit)
+                    # ショートの bracket 注文を発注
+                    self.order = self.sell_bracket(price=o, stopprice=SL, limitprice=TP)
 
-            if exit_price is not None:
-                trade['prices'].append(exit_price)
-                trade['exited'] = True
-                entry_price = trade['entry_price']
-                ret = np.log(exit_price / entry_price) if direction == 'long' else np.log(entry_price / exit_price)
-                prices_array = np.array(trade['prices'])
-
-                # ボラティリティ計算（対数リターンの標準偏差）
-                if len(prices_array) > 1:
-                    log_returns = np.diff(np.log(prices_array))
-                    vol = np.std(log_returns)
-                else:
-                    vol = 0.0
-
-                # 最大ドローダウン計算（累積対数リターンに基づく）
-                cum_log = np.log(prices_array / entry_price)
-                running_max = np.maximum.accumulate(cum_log)
-                drawdowns = running_max - cum_log
-                max_dd = np.max(drawdowns)
-
-                # 教師ラベルの生成
-                if direction == 'long':
-                    label = {
-                        'entry_dt': trade['entry_dt'],
-                        'LongReturn': ret,
-                        'ShortReturn': 0.0,
-                        'LongVolatility': vol,
-                        'ShortVolatility': 0.0,
-                        'LongMaxDD': max_dd,
-                        'ShortMaxDD': 0.0,
-                    }
-                else:  # short
-                    label = {
-                        'entry_dt': trade['entry_dt'],
-                        'LongReturn': 0.0,
-                        'ShortReturn': ret,
-                        'LongVolatility': 0.0,
-                        'ShortVolatility': vol,
-                        'LongMaxDD': 0.0,
-                        'ShortMaxDD': max_dd,
-                    }
-                self.results.append(label)
-                trades_to_remove.append(trade)
-            else:
-                # ストップ/テイクプロフィット未発動の場合、当バーのcloseを記録
-                trade['prices'].append(c)
-                trade['remaining'] -= 1
-                if trade['remaining'] <= 0:
-                    exit_price = c
-                    trade['exited'] = True
-                    entry_price = trade['entry_price']
-                    ret = np.log(exit_price / entry_price) if direction == 'long' else np.log(entry_price / exit_price)
-                    prices_array = np.array(trade['prices'])
-                    if len(prices_array) > 1:
-                        log_returns = np.diff(np.log(prices_array))
-                        vol = np.std(log_returns)
-                    else:
-                        vol = 0.0
-                    cum_log = np.log(prices_array / entry_price)
-                    running_max = np.maximum.accumulate(cum_log)
-                    drawdowns = running_max - cum_log
-                    max_dd = np.max(drawdowns)
-
-                    if direction == 'long':
-                        label = {
-                            'entry_dt': trade['entry_dt'],
-                            'LongReturn': ret,
-                            'ShortReturn': 0.0,
-                            'LongVolatility': vol,
-                            'ShortVolatility': 0.0,
-                            'LongMaxDD': max_dd,
-                            'ShortMaxDD': 0.0,
-                        }
-                    else:
-                        label = {
-                            'entry_dt': trade['entry_dt'],
-                            'LongReturn': 0.0,
-                            'ShortReturn': ret,
-                            'LongVolatility': 0.0,
-                            'ShortVolatility': vol,
-                            'LongMaxDD': 0.0,
-                            'ShortMaxDD': max_dd,
-                        }
-                    self.results.append(label)
-                    trades_to_remove.append(trade)
-
-        # クローズ済みトレードの削除
-        self.open_trades = [t for t in self.open_trades if not t.get('exited', False)]
-
-        ########################################
-        # 2. バー数のカウント更新
-        ########################################
-        self.bar_count += 1
-
-        ########################################
-        # 3. 新規エントリー（entry_intervalごと）
-        ########################################
-        # エントリー時に、CatBoostの予測結果を利用して閾値チェックを実施
-        # データフィードからはLongReturn, ShortReturnが参照可能とする
-        if (self.bar_count - 1) % self.params.entry_interval == 0:
-            if c > self.sma[0] and self.data.LongReturn[0] > self.p.long_return_threshold:
-                entry_price = o
-                trade = {
-                    'entry_dt': current_dt,
-                    'entry_price': entry_price,
-                    'direction': 'long',
-                    'remaining': self.p.hold_period,
-                    'prices': [entry_price],
-                    'SL': entry_price * (1 - self.p.stop_loss),
-                    'TP': entry_price * (1 + self.p.take_profit),
-                    'exited': False,
-                    'just_entered': True,
-                }
-                self.open_trades.append(trade)
-            elif c < self.sma[0] and self.data.ShortReturn[0] < self.p.short_return_threshold:
-                entry_price = o
-                trade = {
-                    'entry_dt': current_dt,
-                    'entry_price': entry_price,
-                    'direction': 'short',
-                    'remaining': self.p.hold_period,
-                    'prices': [entry_price],
-                    'SL': entry_price * (1 + self.p.stop_loss),
-                    'TP': entry_price * (1 - self.p.take_profit),
-                    'exited': False,
-                    'just_entered': True,
-                }
-                self.open_trades.append(trade)
-
+    def notify_order(self, order):
+        # 注文完了時（約定、キャンセル、拒否）に呼ばれる
+        if order.status in [order.Completed]:
+            if order.exectype in [order.Market, order.Limit]:
+                # エントリー注文が約定したら、現在のバー番号を記録
+                if not self.position:
+                    self.entry_bar = self.bar_count
+        # 注文が完了、キャンセル、または拒否された場合、注文変数をクリア
+        if order.status in [order.Completed, order.Canceled, order.Rejected]:
+            self.order = None
+        
 ####################################
 # メイン処理（シミュレーションの実行）
 ####################################
@@ -363,53 +178,82 @@ if __name__ == '__main__':
     cerebro = bt.Cerebro()
     cerebro.addobserver(bt.observers.Broker, plot=False)
 
-    df_combined = pd.DataFrame()
+    df_combined = None  # 内部結合用に初期化
     symbols = config['symbols']
 
-    # --- 各シンボルのデータ取得 ---
+    # --- 各シンボルのデータ取得＆統合 ---
     for sym in symbols:
-        logger.info(f"Fetching data for symbol: {sym}")
         df_sym = fetch_multiple_bybit_data(
             symbol=sym,
             interval=config['interval'],
             limit=config['limit'],
             loops=config['loops']
         )
+        
+        # タイムスタンプ処理
+        if 'timestamp' in df_sym.columns:
+            df_sym['timestamp'] = pd.to_datetime(df_sym['timestamp'])
+            df_sym.set_index('timestamp', inplace=True)
+            df_sym.sort_index(inplace=True)
+        else:
+            df_sym.index = pd.to_datetime(df_sym.index)
+            df_sym.sort_index(inplace=True)
+        
+        # シンボルごとにカラム名にプレフィックスを追加
         df_sym = df_sym.add_prefix(f"{sym}_")
-        df_sym = technical_indicators(df_sym, sym)
-        df_combined = pd.concat([df_combined, df_sym], axis=1)
+        
+        # 内部結合（共通のタイムスタンプを基準）
+        if df_combined is None:
+            df_combined = df_sym
+        else:
+            df_combined = df_combined.join(df_sym, how='inner')
 
+    # --- タイムスタンプの再設定 ---
+    df_combined.reset_index(inplace=True)
+    df_combined['timestamp'] = pd.to_datetime(df_combined['timestamp'])
+    df_combined.set_index('timestamp', inplace=True)
+    df_combined.sort_index(inplace=True)
+
+    # --- 特徴量追加 ---
+    df_combined = add_time_features(df_combined)
+    
+    for sym in symbols:
+        df_combined = technical_indicators(df_combined, sym)
+        df_combined = add_lag_features(df_combined, sym, lags=[1, 2, 3])
+        df_combined = add_rolling_statistics(df_combined, sym, windows=[5, 10, 20])
+    
     df_combined.dropna(inplace=True)
     df_combined.to_csv('forward_test/forwardtest.csv')
-
-    # --- CatBoost 推論 ---
-    df_catboost_predictions = catboost_predict(
-        df_combined,
-        config['catboost_model_path'],
-        window_size=config['window_size'],
-        stride=config['stride']
-    )
-
-    # CatBoostの予測結果を元のDataFrameに追加
-    for col in df_catboost_predictions.columns:
-        df_combined[col] = df_catboost_predictions[col]
     
-    # 推論ウィンドウ分のデータが存在しない行を削除
-    df_combined.dropna(inplace=True)
+    # --- CatBoost 推論 ---
+    model = CatBoostRegressor(task_type='GPU', devices='0:1')
+    model.load_model(config['catboost_model_path'])
+    
+    if hasattr(model, "feature_names_"):
+        expected_features = model.feature_names_
+        missing_features = set(expected_features) - set(df_combined.columns)
+        if missing_features:
+            raise ValueError(f"DataFrameに必要な特徴量が不足しています: {missing_features}")
+        df_combined = df_combined[expected_features]
+    else:
+        pass  # model.feature_names_ が取得できなかった場合、事前に特徴量リストを確認してください。
+    
+    predictions = model.predict(df_combined)
+    print(predictions)
+    df_combined['pred_log_return'] = predictions[:, 0]
+    df_combined['pred_volatility'] = predictions[:, 1]
     
     # --- Backtrader用データフィード作成 ---
-    forward_data = BybitCSV(dataname=df_combined, timeframe=bt.TimeFrame.Minutes, compression=15)
+    forward_data = CustomPandasData(dataname=df_combined, timeframe=bt.TimeFrame.Minutes, compression=15)
     cerebro.adddata(forward_data, name='ForwardTest')
 
-    # --- 戦略の追加（SMAフィルタ付きロング・ショート戦略）
-    cerebro.addstrategy(SmaFilteredEntryExitLongShortStrategy)
+    # --- 戦略の追加（リスク調整後リターン条件付きロング・ショート戦略） ---
+    cerebro.addstrategy(LazyBearSqueezeMomentumStrategy)
     cerebro.broker.setcash(config['cash'])
     cerebro.broker.setcommission(commission=config['commission'])
     cerebro.broker.set_slippage_fixed(fixed=config['slippage'])
     
-    print(f'Starting Portfolio Value: {cerebro.broker.getvalue():.2f}')
-
-    # --- パフォーマンス分析用アナライザーの追加 ---
+    # パフォーマンス分析用アナライザーの追加
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, compression=1)
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trade_analyzer')
@@ -423,4 +267,4 @@ if __name__ == '__main__':
 
     # --- プロット処理 ---
     from plot import plot_results
-    plot_results(cerebro, strat, config, logger)
+    plot_results(cerebro, strat, config, None)
