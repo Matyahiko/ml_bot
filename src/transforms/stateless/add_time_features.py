@@ -1,34 +1,29 @@
 import numpy as np
-import polars as pl
+import pandas as pd
 
-
-def add_time_features_cyc(df: pl.DataFrame) -> pl.DataFrame:
+def add_time_features_cyc(df: pd.DataFrame) -> pd.DataFrame:
     """
     時間特徴量と周期変換
     """
-    ts = pl.col("timestamp")
+ 
+    ts = df.index
     WEEK_PERIOD = 52  # 訓練では 52 週周期とみなす（53 週の年は誤差と割り切る）
 
-    return df.with_columns(
-        [
-            #hour (0–23) 
-            (ts.dt.hour() * 2 * np.pi / 24).sin().alias("hour_sin"),
-            (ts.dt.hour() * 2 * np.pi / 24).cos().alias("hour_cos"),
+    features = {
+        "hour_sin": np.sin(ts.hour * 2 * np.pi / 24),
+        "hour_cos": np.cos(ts.hour * 2 * np.pi / 24),
+        "dow_sin": np.sin((ts.weekday - 1) * 2 * np.pi / 7),
+        "dow_cos": np.cos((ts.weekday - 1) * 2 * np.pi / 7),
+        "month_sin": np.sin((ts.month - 1) * 2 * np.pi / 12),
+        "month_cos": np.cos((ts.month - 1) * 2 * np.pi / 12),
+        "week_sin": np.sin((ts.isocalendar().week - 1) * 2 * np.pi / WEEK_PERIOD),
+        "week_cos": np.cos((ts.isocalendar().week - 1) * 2 * np.pi / WEEK_PERIOD),
+        "quarter_sin": np.sin((ts.quarter - 1) * 2 * np.pi / 4),
+        "quarter_cos": np.cos((ts.quarter - 1) * 2 * np.pi / 4),
+    }
+    
+    for name, series in features.items():
+        df[f"time_{name}"] = series
 
-            #day-of-week (Monday=0)
-            ((ts.dt.weekday() - 1) * 2 * np.pi / 7).sin().alias("dow_sin"),
-            ((ts.dt.weekday() - 1) * 2 * np.pi / 7).cos().alias("dow_cos"),
+    return df
 
-            #month (0–11)
-            ((ts.dt.month() - 1) * 2 * np.pi / 12).sin().alias("month_sin"),
-            ((ts.dt.month() - 1) * 2 * np.pi / 12).cos().alias("month_cos"),
-
-            #ISO week number (0–52)
-            ((ts.dt.week() - 1) * 2 * np.pi / WEEK_PERIOD).sin().alias("week_sin"),
-            ((ts.dt.week() - 1) * 2 * np.pi / WEEK_PERIOD).cos().alias("week_cos"),
-
-            #quarter (0–3)
-            ((ts.dt.quarter() - 1) * 2 * np.pi / 4).sin().alias("quarter_sin"),
-            ((ts.dt.quarter() - 1) * 2 * np.pi / 4).cos().alias("quarter_cos"),
-        ]
-    )

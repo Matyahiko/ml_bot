@@ -1,31 +1,27 @@
 import pandas as pd
 
 def add_rolling_statistics(df: pd.DataFrame, windows: list = [5, 10, 20]) -> pd.DataFrame:
+    # timeで始まる列は除外
+    target_cols = [col for col in df.columns if not str(col).startswith("time")]
 
-    # MultiIndex 構造の確認
-    if not isinstance(df.columns, pd.MultiIndex) or df.columns.nlevels < 2:
-        raise ValueError("DataFrame のカラムは MultiIndex（2 階層以上）である必要があります。")
-
-    # 第１階層のラベル（例: 'BTCUSDT', 'ETHUSDT', ...）
-    syms = df.columns.get_level_values(0).unique()
+    # MultiIndexでstack（index, col）
+    stacked = df[target_cols].stack()
+    # index0: 元のdfのindex、index1: シンボル名
 
     new_cols = {}
-    for sym in syms:
-        # sym に属する二階層目のカラム名一覧
-        subcols = df[sym].columns
-        for sub in subcols:
-            series = df[(sym, sub)]
-            for w in windows:
-                new_cols[(sym, f"{sub}_roll_mean_{w}")] = series.rolling(window=w).mean()
-                new_cols[(sym, f"{sub}_roll_std_{w}")]  = series.rolling(window=w).std()
-                new_cols[(sym, f"{sub}_roll_min_{w}")]  = series.rolling(window=w).min()
-                new_cols[(sym, f"{sub}_roll_max_{w}")]  = series.rolling(window=w).max()
+    for w in windows:
+        roll_mean = stacked.rolling(window=w, min_periods=1).mean().unstack()
+        roll_std  = stacked.rolling(window=w, min_periods=1).std().unstack()
+        roll_min  = stacked.rolling(window=w, min_periods=1).min().unstack()
+        roll_max  = stacked.rolling(window=w, min_periods=1).max().unstack()
 
-    # 新しい列群を DataFrame 化して MultiIndex を復元
+        # 各列に戻してカラム名をつける
+        for col in target_cols:
+            new_cols[f"{col}_roll_mean_{w}"] = roll_mean[col]
+            new_cols[f"{col}_roll_std_{w}"]  = roll_std[col]
+            new_cols[f"{col}_roll_min_{w}"]  = roll_min[col]
+            new_cols[f"{col}_roll_max_{w}"]  = roll_max[col]
+
     feat_df = pd.DataFrame(new_cols, index=df.index)
-    feat_df.columns = pd.MultiIndex.from_tuples(feat_df.columns)
-
-    # 元の df と結合し、列を整列して返す
     result = pd.concat([df, feat_df], axis=1)
-    result = result.sort_index(axis=1)
     return result

@@ -1,29 +1,21 @@
 import pandas as pd
 
 def add_lag_features(df: pd.DataFrame, lags: list = [1, 2, 3]) -> pd.DataFrame:
-    # MultiIndex 構造の確認
-    if not isinstance(df.columns, pd.MultiIndex) or df.columns.nlevels < 2:
-        raise ValueError("DataFrame のカラムは MultiIndex（2 階層以上）である必要があります。")
+    if isinstance(df.columns, pd.MultiIndex):
+        raise ValueError("この関数はフラットなカラム（1階層）専用です。")
 
-    # 第１階層のシンボル一覧を取得
-    syms = df.columns.get_level_values(0).unique()
+    # timeで始まる列は除外
+    target_cols = [col for col in df.columns if not str(col).startswith("time")]
 
-    # 新しいラグ列をタプルキー→Series の dict に格納
     new_cols = {}
-    for sym in syms:
-        # sym に属する二階層目のカラム名一覧
-        subcols = df[sym].columns
-        for sub in subcols:
-            series = df[(sym, sub)]
-            for lag in lags:
-                key = (sym, f"{sub}_lag{lag}")
-                new_cols[key] = series.shift(lag)
+    for col in target_cols:
+        for lag in lags:
+            new_col = f"{col}_lag{lag}"
+            new_cols[new_col] = df[col].shift(lag)
 
-    # dict から DataFrame を作成し、MultiIndex を復元
+    # 新しいラグ特徴量DataFrame
     lag_df = pd.DataFrame(new_cols, index=df.index)
-    lag_df.columns = pd.MultiIndex.from_tuples(lag_df.columns)
 
-    # 元の df と結合、列名をソートして返す
+    # 元データと結合して返す
     result = pd.concat([df, lag_df], axis=1)
-    result = result.sort_index(axis=1)
     return result

@@ -21,20 +21,16 @@ class ApplyScaler(BaseEstimator, TransformerMixin):
             raise ValueError(f'未知のスケーラー: {self.scaler_name}')
 
     def fit(self, X, y=None):
-        self._scalers_ = {}
-        syms = X.columns.get_level_values(0).unique()
-        for sym in syms:
-            scaler = self._init_scaler()
-            scaler.fit(X[sym].values)
-            self._scalers_[sym] = scaler
+        # timeで始まるカラム以外
+        self._target_cols_ = [col for col in X.columns if not str(col).startswith("time")]
+        self._other_cols_ = [col for col in X.columns if str(col).startswith("time")]
+        self._scaler_ = self._init_scaler()
+        self._scaler_.fit(X[self._target_cols_].values)
         return self
 
     def transform(self, X, y=None):
-        out = {}
-        for sym, scaler in self._scalers_.items():
-            data = scaler.transform(X[sym].values)
-            for i, sub in enumerate(X[sym].columns):
-                out[(sym, sub)] = pd.Series(data[:, i], index=X.index)
-        feat_df = pd.DataFrame(out, index=X.index)
-        feat_df.columns = pd.MultiIndex.from_tuples(feat_df.columns)
-        return feat_df[X.columns]  # 列順を保持
+        X_scaled = X.copy()
+        if self._target_cols_:
+            scaled_data = self._scaler_.transform(X[self._target_cols_].values)
+            X_scaled[self._target_cols_] = scaled_data
+        return X_scaled
