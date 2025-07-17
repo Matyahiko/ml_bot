@@ -16,7 +16,6 @@ import json
 import traceback
 from functools import reduce
 
-
 import logging
 from rich.logging import RichHandler
 
@@ -56,8 +55,7 @@ from config import PipelineConfig
 
 # グローバルにワーカー用変数を宣言
 cfg: PipelineConfig
-stateless_pipeline = None
-stateful_pipeline = None
+full_pipeline = None
 
 def _align_and_join(base: pd.DataFrame, add: pd.DataFrame) -> pd.DataFrame:
     """
@@ -74,22 +72,17 @@ def init_worker(config: PipelineConfig):
     各ワーカー起動時に一度だけ呼ばれて必要なオブジェクトを準備する
     これはグローバルにあるけどfoldを跨いでパラメータを共有はしない
     """
-    global cfg, stateless_pipeline, stateful_pipeline
+    global cfg, full_pipeline
     cfg = config
 
-    # ステートレス変換パイプライン
-
-    stateless_pipeline = SklearnPipeline([ 
+    # 全変換パイプライン（stateless + stateful統合版）
+    full_pipeline = SklearnPipeline([
         ("time_feat", FunctionTransformer(add_time_features_cyc, validate=False)),
-        ("tech_ind", FunctionTransformer(partial(add_technical_indicators,symbols=cfg.symbols, feature_lag=cfg.feature_lag,fillna=cfg.fillna,min_non_na=cfg.min_non_na),validate=False)),
-        ("lag_feat",FunctionTransformer(partial(add_lag_features, lags=cfg.lag),validate=False,),),
-        ("roll_stat", FunctionTransformer(partial(add_rolling_statistics, windows=cfg.rolling_windows),validate=False,),),
+        ("tech_ind", FunctionTransformer(partial(add_technical_indicators, symbols=cfg.symbols, feature_lag=cfg.feature_lag, fillna=cfg.fillna, min_non_na=cfg.min_non_na), validate=False)),
+        ("lag_feat", FunctionTransformer(partial(add_lag_features, lags=cfg.lag), validate=False)),
+        ("roll_stat", FunctionTransformer(partial(add_rolling_statistics, windows=cfg.rolling_windows), validate=False)),
         #("drop_high_corr", DropHighCorrFeatures(threshold=cfg.corr_threshold)),
-    ])
-
-    # ステートフル変換 
-    stateful_pipeline = SklearnPipeline([ 
-        ("scaler", ApplyScaler(scaler_name=cfg.scaler))
+        ("scaler", ApplyScaler(scaler_name=cfg.scaler)),
     ])
 
 def process_fold_worker(
@@ -97,20 +90,14 @@ def process_fold_worker(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
-    # ステートレス変換
-    train_t = stateless_pipeline.fit_transform(train_df)
-    test_t = stateless_pipeline.transform(test_df)
-
-    # ステートフル変換     
-    train_t = stateful_pipeline.fit_transform(train_t)
+    # パイプライン変換（fit/transformで一回だけ）
+    train_t = full_pipeline.fit_transform(train_df)
+    test_t = full_pipeline.transform(test_df)
 
     # 2) 学習済みパイプライン保存
     fold_dir = cfg.cache_dir / f"fold{fold_id}"
     fold_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(stateful_pipeline, fold_dir / "stateful_pipeline.joblib")
-
-    # 3) テストデータも transform
-    test_t = stateful_pipeline.transform(test_t)
+    joblib.dump(full_pipeline, fold_dir / "full_pipeline.joblib")
 
     # ラベリング
     from functools import reduce
