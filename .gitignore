@@ -20,7 +20,7 @@ raw_data/
 **/__pycache__/
 joblib_cache/
 ml/catboost_info/*
-tmp/
+/app/ml_bot/research/tmp
 
 #画像
 **/*.png
