@@ -3,8 +3,8 @@
 poetry.lock
 
 #学習済みモデルの重み
-ml/models/*
-models/*
+ml/models/
+models/
 
 #.gitkeepは残す
 !models/.gitkeep
@@ -19,9 +19,9 @@ raw_data/
 #cache
 **/__pycache__/
 joblib_cache/
-ml/catboost_info/*
-/app/ml_bot/research/tmp/*
-/app/ml_bot/research/src/outputs/*
+ml/catboost_info/
+/app/ml_bot/research/tmp/
+/app/ml_bot/research/src/outputs/
 
 
 #画像
