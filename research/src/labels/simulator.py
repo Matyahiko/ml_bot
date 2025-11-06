@@ -4,25 +4,27 @@ import vectorbt as vbt
 from pathlib import Path
 import json
 
-from config import SimulatorConfig
+from omegaconf import DictConfig
 
 class Simulator_Vectorbt:
     def __init__(
         self,
         price_df: pd.DataFrame,
         symbol: str,
-        strategy,
-        fold,
-        strategy_kwargs: dict | None = None,
-        simulator_config: SimulatorConfig | None = None
-    ):
-        self.cfg = simulator_config or SimulatorConfig()
+        strategy_cls,            
+        strategy_cfg: DictConfig, 
+        fold: int,
+        sim_cfg: DictConfig       
+        ):
+        self.cfg = sim_cfg
+        self.strategy_cfg = strategy_cfg
+        self.strategy_cls = strategy_cls
+        self.cfg = sim_cfg
         np.random.seed(self.cfg.random_seed)
         self.price = price_df
         self.symbol = symbol
         self.fold = fold
-        self.strategy_class = strategy
-        self.strategy_kwargs = strategy_kwargs or {}
+        self.strategy_class = strategy_cls
         self.exec_price = self.cfg.exec_price
         self.vwap_lookback = self.cfg.vwap_lookback
         self._bps = self.cfg.slippage_bps / 1e4
@@ -52,10 +54,10 @@ class Simulator_Vectorbt:
         return exec_px
 
     def run(self) -> vbt.Portfolio:
-        strat = self.strategy_class(
-            price_df=self.price,
-            symbol=self.symbol,
-            **self.strategy_kwargs
+        strat = self.strategy_cls(
+        price_df=self.price,
+        symbol=self.symbol,
+        cfg=self.strategy_cfg  
         )
         le, lx, se, sx = strat.generate_signals()
         exec_px = self._make_execution_price()
@@ -85,10 +87,10 @@ class Simulator_Vectorbt:
         if isinstance(horizons, int):
             horizons = [horizons]
 
-        strat = self.strategy_class(
-            price_df=self.price,
-            symbol=self.symbol,
-            **self.strategy_kwargs
+        strat = self.strategy_cls(
+        price_df=self.price,
+        symbol=self.symbol,
+        cfg=self.strategy_cfg
         )
         long_entries, _, short_entries, _ = strat.generate_signals()
         signal = pd.Series(0, index=self.price.index, dtype="int8")
@@ -107,7 +109,7 @@ class Simulator_Vectorbt:
         label_df = pd.DataFrame(labels)
         drop_cols = [f"ret_{n}" for n in horizons]
         label_df = label_df.dropna(subset=drop_cols, how="all")
-        fold_dir = self.cfg.cache_dir / f"fold{self.fold}"
+        fold_dir = Path(self.cfg.cache_dir) / f"fold{self.fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
         target_cols = drop_cols
         with open(fold_dir / "target_columns.json", "w") as f:

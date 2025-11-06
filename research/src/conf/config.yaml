@@ -1,0 +1,10 @@
+# ルート設定ファイル
+defaults:
+  - pipeline/base        # まず固定値
+  - pipeline/search      # 次に探索対象（上書き）
+  - simulator: simulator
+  - strategy: squeeze_momentum
+  - model: lgbm_huber      # ← ここでモデルプリセットを選択
+  
+  - _self_
+  - override hydra/sweeper: optuna   # Optuna Sweeper を有効化

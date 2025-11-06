@@ -1,26 +1,22 @@
 #1_data_pipeline.py
 
-from __future__ import annotations
-from dataclasses import dataclass, field  
+from __future__ import annotations 
 from pathlib import Path
-from typing import List, Type
+from typing import List
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 import pandas as pd
-from sklearn.pipeline import Pipeline as SklearnPipeline # 修正後: 明確なエイリアスを設定
-from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline as SklearnPipeline 
 from sklearn.preprocessing import FunctionTransformer
-from sklearn.base import BaseEstimator as SklearnBaseEstimator, TransformerMixin
 import joblib
 import json
 import traceback
 from functools import reduce
 
-import logging
-from rich.logging import RichHandler
-
-import backtrader as bt
-from vectorbt.utils import checks as validation
+# Hydra
+from omegaconf import DictConfig, OmegaConf
+import hydra
+from hydra.core.hydra_config import HydraConfig
 
 # 以下自作関数
 from transforms.data_loader import DataLoader
@@ -40,49 +36,58 @@ from validation.movingwindow_kfold import MovingWindowKFold
 from labels.simulator import Simulator_Vectorbt
 from labels.squeeze_momentum_indicator_lb_strategy_v2 import SqueezeMomentumStrategy
 
+#探索用評価モデル
+from train.train_eval_lghtgbm_baseline import train_and_evaluate
+
 # Utils
 from utils.util_cache import UtilCache
 from utils.flatten_df import flatten_columns
+import logging
+log = logging.getLogger(__name__)
 
-#設定
-from config import PipelineConfig
-
-# logger = logging.getLogger("data_pipeline")
-# handler = RichHandler(rich_tracebacks=True)
-# logger.handlers.clear()
-# logger.addHandler(handler)
-# logger.setLevel(logging.INFO)
 
 # グローバルにワーカー用変数を宣言
-cfg: PipelineConfig
+cfg: DictConfig
 full_pipeline = None
 
 def _align_and_join(base: pd.DataFrame, add: pd.DataFrame) -> pd.DataFrame:
     """
     Align `add` to `base` on DatetimeIndex and concatenate columns.
-    重複インデックスを削除し、base.index に合わせて reindex してから結合します。
+    重複インデックスを削除し、base.index に合わせて reindex してから結合
     """
     add = add.loc[~add.index.duplicated()]
     add = add.reindex(base.index)
     # axis=1 で横方向にカラムを普通に結合
-    return pd.concat([base, add], axis=1)
+    return pd.concat([base, add], axis=1, verify_integrity=True)
 
-def init_worker(config: PipelineConfig):
+def init_worker(root_cfg: dict):
     """
     各ワーカー起動時に一度だけ呼ばれて必要なオブジェクトを準備する
     これはグローバルにあるけどfoldを跨いでパラメータを共有はしない
+    渡されいるのはrootconfig
     """
-    global cfg, full_pipeline
-    cfg = config
+    global full_pipeline, pipeline_cfg, sim_cfg, strategy_cfg, strategy_cls, cache_dir
+    
+    cfg = OmegaConf.create(root_cfg)
+    pipeline_cfg = cfg.pipeline
+    pipeline_base = cfg.pipeline
+    hp = cfg.pipeline.search
+    sim_cfg      = cfg.simulator
+    strategy_cfg = cfg.strategy
+    #TODO: 複数の戦略をテストできるように拡張予定
+    strategy_cls = SqueezeMomentumStrategy
+    #ワーカー内でdumpするためグローバルに持っておく
+    #親でdumpすると２回シリアライズすることになるため
+    cache_dir    = Path(pipeline_cfg.cache_dir)
 
     # 全変換パイプライン（stateless + stateful統合版）
     full_pipeline = SklearnPipeline([
         ("time_feat", FunctionTransformer(add_time_features_cyc, validate=False)),
-        ("tech_ind", FunctionTransformer(partial(add_technical_indicators, symbols=cfg.symbols, feature_lag=cfg.feature_lag, fillna=cfg.fillna, min_non_na=cfg.min_non_na), validate=False)),
-        ("lag_feat", FunctionTransformer(partial(add_lag_features, lags=cfg.lag), validate=False)),
-        ("roll_stat", FunctionTransformer(partial(add_rolling_statistics, windows=cfg.rolling_windows), validate=False)),
-        #("drop_high_corr", DropHighCorrFeatures(threshold=cfg.corr_threshold)),
-        ("scaler", ApplyScaler(scaler_name=cfg.scaler)),
+        ("tech_ind", FunctionTransformer(partial(add_technical_indicators, symbols=pipeline_cfg.symbols,  feature_lag=hp.feature_lag, fillna=hp.fillna, min_non_na=hp.min_non_na), validate=False)),
+        ("lag_feat", FunctionTransformer(partial(add_lag_features, lags=hp.lag), validate=False)),
+        ("roll_stat", FunctionTransformer(partial(add_rolling_statistics, windows=hp.rolling_windows), validate=False)),
+        #("drop_high_corr", DropHighCorrFeatures(threshold=cfg.corr_threshold)),　
+        ("scaler", ApplyScaler(scaler_name=hp.scaler)),
     ])
 
 def process_fold_worker(
@@ -90,37 +95,43 @@ def process_fold_worker(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
+    
+    
     # パイプライン変換（fit/transformで一回だけ）
     train_t = full_pipeline.fit_transform(train_df)
     test_t = full_pipeline.transform(test_df)
 
     # 2) 学習済みパイプライン保存
-    fold_dir = cfg.cache_dir / f"fold{fold_id}"
+    fold_dir = cache_dir / f"fold{fold_id}"
     fold_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(full_pipeline, fold_dir / "full_pipeline.joblib")
 
     # ラベリング
-    from functools import reduce
+    # ラベリング用に init_worker で作ったグローバル変数を使う
     train_labels_list: list[pd.DataFrame] = []
     test_labels_list: list[pd.DataFrame] = []
 
-    for symbol in cfg.symbols:
-        if symbol not in cfg.target:
+    for symbol in pipeline_cfg.symbols:
+        if symbol not in pipeline_cfg.target:
             continue
         
         simulator_train = Simulator_Vectorbt(
-            price_df=train_df,
-            symbol=symbol,
-            strategy=cfg.strategy_cls,
-            fold=fold_id
+                price_df=train_df,
+                symbol=symbol,
+                strategy_cls=strategy_cls,
+                strategy_cfg=strategy_cfg,
+                sim_cfg=sim_cfg,
+                fold=fold_id
         )
         train_labels_list.append(simulator_train.get_labels())
 
         simulator_test = Simulator_Vectorbt(
-            price_df=test_df,
-            symbol=symbol,
-            strategy=cfg.strategy_cls,
-            fold=fold_id
+        price_df=test_df,
+        symbol=symbol,
+        strategy_cls=strategy_cls,
+        strategy_cfg=strategy_cfg,
+        sim_cfg=sim_cfg,
+        fold=fold_id
         )
         test_labels_list.append(simulator_test.get_labels())
 
@@ -136,30 +147,23 @@ def process_fold_worker(
     return {"train": train_t, "test": test_t}
 
 class DataPipeline:
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: DictConfig):
         self.cfg = config
-        self.dl = DataLoader(
-            data_path=config.data_path,
-            exchange=config.exchange,
-            interval=config.interval,
-            file_format=config.file_format,
-        )
-        self.tscv = MovingWindowKFold(
-            n_splits=config.fold,
-            clipping=config.clipping,
-        )
+        self.cache_dir = Path(self.cfg.pipeline.cache_dir)
+        self.dl = DataLoader(data_path=self.cfg.pipeline.data_path, exchange=self.cfg.pipeline.exchange, interval=self.cfg.pipeline.interval, file_format=self.cfg.pipeline.file_format,)
+        self.tscv = MovingWindowKFold(n_splits=self.cfg.pipeline.fold, clipping=self.cfg.pipeline.clipping,)
 
-
-    def run(self) -> None:
-        df_full = self.dl.load(symbols=self.cfg.symbols)
+    def run(self, cfg_worker: dict, return_metrics: bool = False) -> dict | None:
+        df_full = self.dl.load(symbols=self.cfg.pipeline.symbols)
         splits = list(self.tscv.split(df_full))
-        print(f"分割完了: 分割={self.cfg.fold}, clipping={self.cfg.clipping}")
+        log.info(f"分割完了: 分割={self.cfg.pipeline.fold}, clipping={self.cfg.pipeline.clipping}")
+        all_scores = [] 
 
         # 並列処理 (initializer でワーカー内部にパイプラインを構築)
         with ProcessPoolExecutor(
-            max_workers=self.cfg.fold,
+            max_workers=self.cfg.pipeline.fold,
             initializer=init_worker,
-            initargs=(self.cfg,),
+            initargs=(cfg_worker,),  
         ) as executor:
             futures = {
                 executor.submit(
@@ -175,11 +179,10 @@ class DataPipeline:
 
                 try:
                     result = future.result()
-                    print(f"Fold {fold} 完了")
-                    print(f"Fold {fold} データ構造: {result['train'].shape}")
+                    log.info(f"Fold {fold} 完了")
+                    log.info(f"Fold {fold} データ構造: {result['train'].shape}")
 
-                    # 保存ディレクトリの準備
-                    fold_dir = self.cfg.cache_dir / f"fold{fold}"
+                    fold_dir = self.cache_dir / f"fold{fold}"
                     fold_dir.mkdir(parents=True, exist_ok=True)
 
                     # Parquet形式で学習用データ保存（圧縮あり）
@@ -191,25 +194,44 @@ class DataPipeline:
                     result["test"].head(100).to_csv(fold_dir / "test_sample.csv", index=False)
 
                     # オプション：メタ情報も保存（設定のスナップショット）
-                    meta_info = {
-                        "symbols": self.cfg.symbols,
-                        "rolling_windows": self.cfg.rolling_windows,
-                        "lag": self.cfg.lag,
-                        "scaler": self.cfg.scaler,
-                        "strategy": self.cfg.strategy_cls.__name__,
-                        "fold": fold,
-                    }
-                    with open(fold_dir / "meta.json", "w") as f:
-                        json.dump(meta_info, f, indent=4)
-
+                    OmegaConf.save(config=self.cfg, f=str(fold_dir/"meta.yaml"), resolve=True)
+                    
+                    #パラメータの評価
+                    if return_metrics:
+                        score = train_and_evaluate(
+                            cfg=self.cfg,
+                            train_df=result["train"],           
+                            test_df=result["test"],
+                        )
+                        all_scores.append(score)
+                
                 except Exception as e:
-                    #print(f"Error fold {fold}:{e}")
-                    #print(f"Error fold {fold}: {type(e).__name__}: {e}")
-                    # フルスタックを標準出力に
-                    traceback.print_exc()
-                    pass
+                    log.exception(f"Fold {fold} の前処理で例外発生")
+                
+        if return_metrics:
+            avg = sum(all_scores) / len(all_scores)
+            return {"average_score": avg}                    
+        return None
                                 
+# Hydra用エントリーポイント
+@hydra.main(version_base=None, config_path="conf", config_name="config")       
+def main(cfg: DictConfig)-> float | None:
+    #print(OmegaConf.to_yaml(cfg)) 
+    # ワーカーへ渡す picklable dict
+    cfg_worker = OmegaConf.to_container(cfg, resolve=True)
+    pipeline = DataPipeline(cfg) 
+    # hydra.job.num が存在すればスイープ
+    is_sweep = HydraConfig.get().mode == "MULTIRUN"
+        
+    if is_sweep:
+        # パラメータ探索(optuna) foldの並列で2重にならないようにn_jobsを1にする
+        metrics = pipeline.run(cfg_worker, return_metrics=True)
+        return float(metrics["average_score"])  
+    else:
+        # 通常処理
+        pipeline.run(cfg_worker, return_metrics=False)
+        return None
+                
+
 if __name__ == "__main__":
-    config = PipelineConfig()
-    pipeline = DataPipeline(config)
-    pipeline.run()
+    main()   

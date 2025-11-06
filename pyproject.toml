@@ -5,6 +5,8 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 authors = [{name = "skip"}]
+[tool.setuptools.packages.find]
+include = ["research*","production*"]
 
 dependencies = [
     "pandas>=2.1.1",

@@ -1,0 +1,9 @@
+# conf/pipeline/search.yaml
+# 前処理パラメータ
+feature_lag: 1                           # 特徴量を何期後ろへシフトするか
+fillna: ffill                            # 欠損補完方法 ("ffill"/"bfill"/"zero"/null)
+min_non_na: 0.7                          # 列残存率の下限
+rolling_windows: [5, 10, 20]             # ローリング統計の窓長
+lag: [1, 2, 3]                           # ラグ特徴量
+scaler: robust                           # スケーラー名
+corr_threshold: 0.95                     # 高相関除外の閾値

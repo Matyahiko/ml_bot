@@ -1,0 +1,18 @@
+_target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+direction: minimize       # RMSE を最小化
+n_trials: 50
+n_jobs: 1                 # 外側並列は抑え、fold 並列を優先
+storage: sqlite:///optuna_study.db
+study_name: lgbm_huber_search
+
+# 探索空間（例）
+params:
+  # pipeline.search.* を上書き
+  pipeline.search.feature_lag: choice(0, 1, 2)
+  pipeline.search.fillna: choice(ffill, bfill, zero)
+  pipeline.search.min_non_na: uniform(0.5, 0.9)
+  pipeline.search.rolling_windows: choice("[5,10,20]", "[3,6,12]", "[10,20,40]")
+  pipeline.search.lag: choice("[1,2,3]", "[1,3,5]", "[1,4,8]")
+  pipeline.search.scaler: choice(robust, standard, minmax)
+  pipeline.search.corr_threshold: uniform(0.85, 0.99)
+

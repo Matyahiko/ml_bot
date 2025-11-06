@@ -1,7 +1,7 @@
 import vectorbt as vbt
 import numpy as np
 import pandas as pd
-from labels.squeeze_momentum_indicator_lb_strategy_v2_config import SqueezeMomentumConfig
+from omegaconf import DictConfig
 
 class SqueezeMomentumStrategy:
 
@@ -41,9 +41,8 @@ class SqueezeMomentumStrategy:
         output_names=['squeeze', 'momentum'],
     ).from_apply_func(_lazybear_apply)
         
-    def __init__(self, price_df: pd.DataFrame, symbol: str,
-                 config: SqueezeMomentumConfig = SqueezeMomentumConfig()):
-        # ---- マルチインデックス→フラットインデックス ここを修正 ----
+    def __init__(self, price_df: pd.DataFrame, symbol: str, cfg: DictConfig):
+        self.cfg = cfg
         self.open  = price_df[f"{symbol}_Open"]
         self.high  = price_df[f"{symbol}_High"]
         self.low   = price_df[f"{symbol}_Low"]
@@ -51,12 +50,12 @@ class SqueezeMomentumStrategy:
         
         self.ind = self._LazyBearSMI.run(
             self.open, self.high, self.low, self.close,
-            bb_period=config.bb_period,
-            kc_multiplier=config.kc_multiplier,
-            bb_multiplier=config.bb_multiplier,
-            linreg_period=config.linreg_period,
+            bb_period=cfg.bb_period,
+            kc_multiplier=cfg.kc_multiplier,
+            bb_multiplier=cfg.bb_multiplier,
+            linreg_period=cfg.linreg_period,
         )
-        self.cfg = config
+        self.cfg = cfg
         
     def generate_signals(self):
         squeeze   = self.ind.squeeze
