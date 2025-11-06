@@ -1,0 +1,26 @@
+# パイプライン設定
+symbols: ["BTCUSDT", "ETHUSDT"]          # 対象シンボル
+target: "BTCUSDT"                        # ターゲットシンボル
+# データ読み込み設定
+data_path: /app/ml_bot/research/data/old_data    # データ格納ディレクトリ
+exchange: bybit                          # 取引所名
+interval: 15m                            # 時間足
+file_format: csv                         # 入力ファイル形式
+# クロスバリデーション設定
+fold: 5                                  # 分割数
+clipping: false                          # False でプリクエンシャルブロック法
+# キャッシュ設定
+use_cache: false                         # キャッシュ利用有無
+cache_dir: /app/ml_bot/research/tmp               # キャッシュ保存先
+# 前処理パラメータ
+feature_lag: 1                           # 特徴量を何期後ろへシフトするか
+fillna: ffill                            # 欠損補完方法 ("ffill"/"bfill"/"zero"/null)
+min_non_na: 0.7                          # 列残存率の下限
+rolling_windows: [5, 10, 20]             # ローリング統計の窓長
+lag: [1, 2, 3]                           # ラグ特徴量
+scaler: robust                           # スケーラー名
+corr_threshold: 0.95                     # 高相関除外の閾値
+# ラベリング戦略クラス (Hydra instantiate 用)
+strategy_cls:
+  _target_: labels.squeeze_momentum_indicator_lb_strategy_v2.SqueezeMomentumStrategy
+  _partial_: true

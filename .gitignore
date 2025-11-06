@@ -2,25 +2,46 @@
 .env
 poetry.lock
 
-#学習済みモデルの重み
-ml/models/*
-models/*
+#python caches & env
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.pytype/
+.ruff_cache/
+.cache/
+**/__pycache__/
 
-#.gitkeepは残す
+#学習済みモデルの重み
+ml/models/
+models/
 !models/.gitkeep
 
 #データセット
 storage/
 raw_data/
+research/data/
 **/*.csv
 **/*.tsv
+**/*.parquet
+**/*.joblib
 
-
-#cache
-**/__pycache__/
+#実験生成物
 joblib_cache/
-ml/catboost_info/*
+ml/catboost_info/
+research/tmp/
+research/src/outputs/
+tmp/
+outputs/
+multirun/
 
 #画像
 **/*.png
 plots/
+
+#misc
+*.log
+.DS_Store
+.idea/
+.vscode/

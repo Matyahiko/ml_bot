@@ -1,0 +1,11 @@
+# シミュレータ設定
+freq: 15T                                # データ頻度 ("15T"=15分足)
+initial_cash: 100_000                    # 初期資金
+fees: 0.0                                # 取引手数料（%）
+slippage_bps: 0.0                        # スリッページ (basis points)
+exec_price: vwap                         # 約定価格の種類
+vwap_lookback: 1                         # VWAP 計算に使う過去本数
+random_seed: 42                          # 乱数シード
+horizons: [2, 4, 6]                      # 保有期間 (int or list[int])
+annualize_vol: false                     # ボラティリティを √n 倍するか
+cache_dir: /app/ml_bot/tmp               # シミュレータ用キャッシュ
