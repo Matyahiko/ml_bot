@@ -22,6 +22,7 @@ models/
 storage/
 raw_data/
 research/data/
+!research/data/.gitkeep
 **/*.csv
 **/*.tsv
 **/*.parquet

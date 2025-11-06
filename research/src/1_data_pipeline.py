@@ -1,16 +1,13 @@
 #1_data_pipeline.py
 
-from __future__ import annotations 
+from __future__ import annotations
 from pathlib import Path
-from typing import List
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 import pandas as pd
 from sklearn.pipeline import Pipeline as SklearnPipeline 
 from sklearn.preprocessing import FunctionTransformer
 import joblib
-import json
-import traceback
 from functools import reduce
 
 # Hydra
@@ -25,7 +22,6 @@ from transforms.stateless.add_time_features import add_time_features_cyc
 from transforms.stateless.add_technical_indicators import add_technical_indicators
 from transforms.stateless.add_rolling_statistics import add_rolling_statistics
 from transforms.stateless.add_lag_features import add_lag_features
-from transforms.stateless.drop_high_corr_features import DropHighCorrFeatures
 # 特徴量追加(状態依存)
 from transforms.stateful.apply_scaler import ApplyScaler
 
@@ -39,9 +35,7 @@ from labels.squeeze_momentum_indicator_lb_strategy_v2 import SqueezeMomentumStra
 #探索用評価モデル
 from train.train_eval_lghtgbm_baseline import train_and_evaluate
 
-# Utils
-from utils.util_cache import UtilCache
-from utils.flatten_df import flatten_columns
+# ロギング
 import logging
 log = logging.getLogger(__name__)
 
@@ -70,8 +64,6 @@ def init_worker(root_cfg: dict):
     
     cfg = OmegaConf.create(root_cfg)
     pipeline_cfg = cfg.pipeline
-    pipeline_base = cfg.pipeline
-    hp = cfg.pipeline.search
     sim_cfg      = cfg.simulator
     strategy_cfg = cfg.strategy
     #TODO: 複数の戦略をテストできるように拡張予定
@@ -83,11 +75,10 @@ def init_worker(root_cfg: dict):
     # 全変換パイプライン（stateless + stateful統合版）
     full_pipeline = SklearnPipeline([
         ("time_feat", FunctionTransformer(add_time_features_cyc, validate=False)),
-        ("tech_ind", FunctionTransformer(partial(add_technical_indicators, symbols=pipeline_cfg.symbols,  feature_lag=hp.feature_lag, fillna=hp.fillna, min_non_na=hp.min_non_na), validate=False)),
-        ("lag_feat", FunctionTransformer(partial(add_lag_features, lags=hp.lag), validate=False)),
-        ("roll_stat", FunctionTransformer(partial(add_rolling_statistics, windows=hp.rolling_windows), validate=False)),
-        #("drop_high_corr", DropHighCorrFeatures(threshold=cfg.corr_threshold)),　
-        ("scaler", ApplyScaler(scaler_name=hp.scaler)),
+        ("tech_ind", FunctionTransformer(partial(add_technical_indicators, symbols=pipeline_cfg.symbols,  feature_lag=pipeline_cfg.feature_lag, fillna=pipeline_cfg.fillna, min_non_na=pipeline_cfg.min_non_na), validate=False)),
+        ("lag_feat", FunctionTransformer(partial(add_lag_features, lags=pipeline_cfg.lag), validate=False)),
+        ("roll_stat", FunctionTransformer(partial(add_rolling_statistics, windows=pipeline_cfg.rolling_windows), validate=False)),
+        ("scaler", ApplyScaler(scaler_name=pipeline_cfg.scaler)),
     ])
 
 def process_fold_worker(
@@ -143,7 +134,6 @@ def process_fold_worker(
         combined_test = reduce(lambda l, r: l.fillna(r), test_labels_list)
         test_t = _align_and_join(test_t, combined_test)
 
-    # flatten_columnsの呼び出しは不要
     return {"train": train_t, "test": test_t}
 
 class DataPipeline:
