@@ -14,7 +14,7 @@ from data_fetch import fetch_multiple_bybit_data
 # モジュールのパスを追加（必要に応じて）
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.prerpocess.technical_indicators import technical_indicators
+from modules.preprocess.technical_indicators import technical_indicators
 from modules.lightgbm.meta_predict import predict  # predict関数のインポート
 
 plt.style.use("default") 
